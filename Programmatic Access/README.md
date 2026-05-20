@@ -58,7 +58,7 @@ python document_chat.py
 
 ## Getting help
 
-- Full workshop: `https://catalog.workshops.aws/mpseller/en-US/pc-agents`
+- [Workshop Link](https://catalog.workshops.aws/mpseller/en-US/pc-agents)
 - [Partner Central MCP Server docs](https://docs.aws.amazon.com/partner-central/latest/APIReference/partner-central-mcp-server.html)
 - [Getting Started Guide](https://docs.aws.amazon.com/partner-central/latest/APIReference/mcp-getting-started.html)
 
