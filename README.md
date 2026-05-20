@@ -27,6 +27,9 @@ Partner Central Agents are AI-powered assistants that help AWS partners manage t
 
 There are multiple ways to access Partner Central Agents, ranging from non-technical (no code) to fully technical (build your own agent). Choose the path that fits your team's needs.
 
+<img width="1700" height="896" alt="PCA_Flow_Diagram" src="https://github.com/user-attachments/assets/d139da03-46ad-4989-a6d6-2118323d6227" />
+
+
 ### 1. AWS Console
 
 Use the built-in AI assistant directly in the AWS Partner Central console. No setup required.
