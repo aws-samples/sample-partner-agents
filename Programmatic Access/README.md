@@ -1,6 +1,6 @@
 # Programmatic Access to Partner Central Agents via MCP
 
-## What is these code samples?
+## What are these code samples?
 
 These code samples provide you examples on how to programmatically connect to AWS Partner Central Agents using the Model Context Protocol (MCP). Instead of using the AWS console UI, you'll build your own client that can query your sales pipeline, get funding recommendations, generate sales plays, and manage opportunities — all from code.
 
@@ -29,19 +29,6 @@ Before starting, make sure you have:
 | `pipeline_chat.py` | Interactive chat with streaming and write approval |
 | `document_chat.py` | Upload and analyze documents |
 | `sample_meeting_notes.txt` | Sample file for document analysis |
-
----
-
-## Architecture
-
-```
-┌─────────────────┐       SigV4 Auth        ┌──────────────────────────────┐
-│                  │  ───────────────────►    │  Partner Central Agent       │
-│  Your MCP Client │  JSON-RPC 2.0 / HTTPS   │  MCP Server                  │
-│  (Python, etc.)  │  ◄───────────────────    │  us-east-1.api.aws/mcp       │
-│                  │  SSE Streaming           │                              │
-└─────────────────┘                          └──────────────────────────────┘
-```
 
 ---
 
