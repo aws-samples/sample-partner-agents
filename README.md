@@ -86,27 +86,7 @@ Integrate Partner Central Agents directly into your own applications via the API
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          CLIENT LAYER                                    │
-│  Console │ Kiro/Q │ Python │ Slack/Teams │ Partner CRM │ Custom Agent   │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │ HTTPS / SSE
-┌────────────────────────────────▼────────────────────────────────────────┐
-│                       AUTH & TRANSPORT                                    │
-│           AWS SigV4  │  IAM Credentials  │  Session Management           │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │ MCP Protocol (JSON-RPC 2.0)
-┌────────────────────────────────▼────────────────────────────────────────┐
-│                         MCP SERVER                                        │
-│     mcp-proxy-for-aws  │  sendMessage  │  getSession  │  Approvals       │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │ API Calls
-┌────────────────────────────────▼────────────────────────────────────────┐
-│                    PARTNER CENTRAL SERVICE                                │
-│  Opportunities │ Funding │ Sales Plays │ Customer Insights │ Documents   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+<img width="1303" height="797" alt="Integration_Architecture" src="https://github.com/user-attachments/assets/7fc25b9d-16c0-4a43-ad36-b8464eca3c0c" />
 
 ---
 
