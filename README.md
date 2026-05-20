@@ -38,7 +38,7 @@ Use the built-in AI assistant directly in the AWS Partner Central console. No se
 
 ---
 
-### 2. Kiro with MCP
+### 2a. Kiro with MCP
 
 Connect Partner Central Agents to your IDE via the Model Context Protocol (MCP). Get AI-powered assistance right in your development environment.
 
@@ -46,7 +46,7 @@ Connect Partner Central Agents to your IDE via the Model Context Protocol (MCP).
 
 ---
 
-### 3. Python MCP Client
+### 2b. Python MCP Client
 
 Build Python scripts that interact with Partner Central Agents programmatically. Automate pipeline queries, document analysis, and batch operations.
 
@@ -54,7 +54,7 @@ Build Python scripts that interact with Partner Central Agents programmatically.
 
 ---
 
-### 4. External Tools
+### 3. External Tools
 
 Connect Partner Central Agents to collaboration platforms and AI tools that support MCP.
 
@@ -68,7 +68,7 @@ Connect Partner Central Agents to collaboration platforms and AI tools that supp
 
 ---
 
-### 5. Partner's Own CRM
+### 4. Partner's Own CRM
 
 Embed Partner Central Agents into your CRM system (Salesforce, HubSpot, etc.). Surface opportunity insights, funding eligibility, and sales plays directly within the tools your sales team uses daily.
 
@@ -76,7 +76,7 @@ Embed Partner Central Agents into your CRM system (Salesforce, HubSpot, etc.). S
 
 ---
 
-### 6. API Integration & Build Your Own Agent
+### 5. API Integration & Build Your Own Agent
 
 Integrate Partner Central Agents directly into your own applications via the API, or build your own AI agent that orchestrates Partner Central alongside other tools and data sources. Create multi-agent workflows, custom UIs, and fully autonomous pipelines.
 
