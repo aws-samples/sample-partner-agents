@@ -1,0 +1,16 @@
+cat > sample_meeting_notes.txt << 'EOF'
+Meeting Notes — Example Corp Cloud Migration
+Date: 2026-04-15
+Attendees: Jane Smith (CTO), Alex Johnson (Partner SA), Maria Garcia (AWS AM)
+
+Summary:
+- Migrate on-premises data warehouse (Oracle) to Amazon Redshift
+- Timeline: Q3 2026. Workload: 5 TB, 200+ daily ETL jobs
+- Evaluating AWS vs. competitor on cost, tooling, and support
+
+Action Items:
+1. Partner: POC migration plan by April 30
+2. AWS SA: Well-Architected review
+3. Partner: MAP funding application
+4. Follow-up meeting May 1
+EOF
