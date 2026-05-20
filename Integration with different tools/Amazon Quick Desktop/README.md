@@ -1,6 +1,8 @@
 # Amazon Quick Desktop — Quick Setup Guide
 
-You can follow the steps below to set up your local environment before connecting Partner Central agents to Amazon Quick Desktop. You can also use the scripts in this folder to help check your setup before connecting. helper.ps1 for Windows & helper.sh for MAC/Linux
+You can follow the steps below to set up your local environment before connecting Partner Central agents to Amazon Quick Desktop. You can also use the scripts in this folder to help check your setup before connecting. 
+
+helper.ps1 for Windows & helper.sh for MAC/Linux
 
 Installs prerequisites, checks Partner Central access, and verifies connectivity.
 
