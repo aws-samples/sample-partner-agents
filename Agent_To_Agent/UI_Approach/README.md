@@ -282,17 +282,27 @@ class MyCustomMapper(HubSpotToPartnerCentralMapper):
 
 ### Bi-directional Sync: Partner Central → HubSpot
 
-When a Partner Central opportunity status changes (e.g., Approved, Rejected), you can sync the status back to the corresponding HubSpot deal:
+When a Partner Central opportunity is updated (e.g., new next steps from the agent), you can sync the latest values back to the corresponding HubSpot deal:
 
 ```bash
-# Sync PC opportunity status to HubSpot deal
+# Sync PC opportunity to HubSpot deal
 python orchestrator_agent.py hubspot-sync -o O15081741 -d 12345678901
 
 # With explicit token
 python orchestrator_agent.py hubspot-sync -o O15081741 -d 12345678901 --hubspot-token "pat-na2-xxxxx"
 ```
 
-#### Partner Central → HubSpot Stage Mapping
+#### What Gets Synced
+
+By default, **only the `hs_next_step` field** (HubSpot's built-in Next Step property) is synced from the Partner Central `LifeCycle.NextSteps` field. This minimal sync is intentional:
+
+- `hs_next_step` is a built-in HubSpot Deal property available on every portal
+- It accepts free-form text up to 500 characters
+- Avoids 400 errors from portals that use custom pipelines, validation rules, or non-default stage IDs
+
+#### Optional: Sync HubSpot Deal Stage
+
+If you want to also sync the deal stage (off by default), call `map_opportunity_to_deal_update(opportunity, sync_stage=True)`. The mapping logic uses Partner Central `ReviewStatus` and `Stage` to derive a HubSpot stage ID from the **default sales pipeline** — customize `_map_to_hubspot_stage()` if your portal uses different stage IDs.
 
 | PC Review Status | HubSpot Deal Stage |
 |------------------|-------------------|
@@ -320,21 +330,14 @@ from orchestrator_agent import OrchestratorAgent
 
 agent = OrchestratorAgent(hubspot_token="pat-na2-xxxxx")
 
-# Sync opportunity status to HubSpot
+# Sync next steps to HubSpot
 result = agent.sync_to_hubspot(
     opportunity_id="O15081741",
     hubspot_deal_id="12345678901"
 )
 
 if result["success"]:
-    print(f"Synced! HubSpot stage: {result['sync_status']['recommended_hubspot_stage']}")
-
-# Or check status and optionally sync
-result = agent.check_and_sync_opportunity(
-    opportunity_id="O15081741",
-    hubspot_deal_id="12345678901"  # Optional - if provided, syncs to HubSpot
-)
-print(f"PC Status: {result['review_status']} / {result['stage']}")
+    print(f"Synced! Next steps written to hs_next_step field")
 ```
 
 ### AWS Marketplace Catalog Queries
