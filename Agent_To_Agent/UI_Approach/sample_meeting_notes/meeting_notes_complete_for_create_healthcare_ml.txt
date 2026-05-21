@@ -1,0 +1,89 @@
+# DEMO DATA — All companies, people, addresses, websites, phone numbers,
+# and financial figures in this file are fictional. Names follow the AWS
+# canonical fictional-persona conventions ("AnyCompany", "Saanvi Sarkar",
+# etc.). Domains use RFC 2606 reserved test TLDs (.example.com) and
+# cannot be registered as real sites.
+
+Meeting Notes — Expansion Discussion with AnyCompany Health Network
+Date: May 19, 2026
+Attendees: Dr. Mateo Jackson (Chief Medical Information Officer, AnyCompany Health),
+            Pat Candella (VP Data Platforms, AnyCompany Health),
+            Mary Major (Chief Compliance Officer, AnyCompany Health),
+            Ming Zhu (AWS Partner SA)
+
+Customer Profile:
+AnyCompany Health Network is a regional healthcare network with 14 hospitals and 180
+outpatient clinics across the Midwest, headquartered at 100 Example Plaza,
+Suite 1500, Chicago, IL 60601, United States. Their website is www.anycompany-health.example.com.
+AnyCompany Health operates in the Healthcare and Life Sciences industry and serves approximately
+2.4 million patients annually. They are an existing AWS customer with current monthly
+spend of about $48,000, primarily on object storage (S3, EBS) and a Redshift-based
+clinical reporting cluster. This conversation is about EXPANDING their AWS footprint
+with a new AI/ML workload, not a net-new account.
+
+Business Problem:
+AnyCompany Health's clinical staff currently spends an average of 4.2 hours per week per
+provider on chart preparation and documentation review. A 2026 internal study showed
+that 38% of preventable readmissions could be flagged earlier if discharge summaries
+and lab trend data were synthesized in real time. Their existing on-premises NLP
+pipeline (Spark on bare-metal) takes 6+ hours per batch, missing the same-day
+clinical decision window. Recent HIPAA enforcement actions in the region have
+also raised the bar on PHI handling — AnyCompany Health's compliance team requires any new
+ML workload to support BAA coverage, audit logging, and de-identification at rest.
+The combined pressure of clinician burnout, readmission penalties under CMS HRRP,
+and tighter PHI controls has made an AI-driven clinical-decision-support platform
+a top-three CIO priority for fiscal year 2027.
+
+Project Scope and Use Case:
+The primary use case is AI Machine Learning and Analytics. Scope includes:
+fine-tuning an Amazon Bedrock foundation model on AnyCompany Health's 8 years of
+de-identified discharge notes, deploying real-time inference for readmission risk
+scoring on Amazon SageMaker, ingesting HL7/FHIR feeds from their existing electronic
+health record system via AWS HealthLake, and surfacing predictions back to clinicians
+through a clinician-facing chat assistant embedded in their existing physician portal.
+Data residency must stay in us-east-2; cross-region replication only for backup. All
+inference traffic will go through PrivateLink — no public endpoints.
+
+Solution and Delivery Model:
+We're proposing a SaaS or PaaS delivery model. AnyCompany Health will own and operate
+the AWS account; our team delivers the platform as a managed software stack with
+quarterly model retraining and ongoing performance monitoring. Solution description:
+AWS-native clinical decision support platform combining Amazon Bedrock for
+foundation model fine-tuning, Amazon SageMaker for inference, AWS HealthLake for
+FHIR ingestion, Amazon OpenSearch Service for clinical knowledge retrieval, and
+a clinician-facing assistant. Comprehensive HIPAA controls including AWS KMS
+customer-managed keys, VPC endpoint isolation, and CloudTrail data-event logging.
+Estimated incremental monthly AWS spend: $22,000 above their current baseline,
+ramping to $38,000 by month nine as more clinics onboard.
+
+Sales Activity to Date:
+Customer has shown interest in solution. We delivered a 90-minute architecture
+deep-dive last week covering Bedrock fine-tuning options and the HIPAA control
+mappings. Dr. Jackson committed to a 6-week proof-of-value on a single specialty
+(cardiology readmissions) before broader rollout. Internal IRB review of the
+de-identification approach is already in progress. No formal POC has been
+executed yet.
+
+AWS Involvement Type:
+This is For Visibility Only. AnyCompany Health's procurement team prefers to purchase
+through our existing MSA and does not want a separate AWS-led sales motion.
+We've kept their AWS account team informed for technical alignment but they
+will not be customer-facing for this expansion.
+
+Primary Need from AWS:
+"For Visibility Only - No AWS Engagement". The customer does NOT want any
+co-sell support, technical consultation, or deal support from AWS — we are
+sharing this opportunity purely for AWS pipeline visibility. Do NOT pick any
+"Co-Sell -*" value for PrimaryNeedsFromAws.
+
+Target Close Date: 2027-01-31
+Expected Customer Spend: $22,000 USD monthly (incremental, ramping to $38,000)
+Opportunity Type: Expansion
+
+Primary Contact:
+Pat Candella, Vice President of Data Platforms
+Email: pat.candella@anycompany-health.example.com
+Phone: +13125550292
+
+Decision Maker: Dr. Mateo Jackson, Chief Medical Information Officer
+Compliance Approver: Mary Major, Chief Compliance Officer

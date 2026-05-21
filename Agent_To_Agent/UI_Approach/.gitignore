@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment variables / credentials
+.env
+.env.local
+.aws/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Allow config.json in this folder (overrides root .gitignore)
+!config.json

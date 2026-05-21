@@ -1,0 +1,79 @@
+Meeting Notes — Late-Stage Deal Review with HealthBridge Systems
+Date: May 18, 2026
+Attendees: David Ramos (CFO, HealthBridge), Karen Nguyen (CIO, HealthBridge),
+            Jen Patel (Procurement Director, HealthBridge), Ming Zhu (AWS Partner SA),
+            Christina Passmore (AWS Partner Account Manager)
+
+Background:
+HealthBridge is a healthcare SaaS company. We've been working this deal for 5 months and the
+technical and security validation is complete. We are within sight of a signed SOW but several
+non-technical obstacles have emerged in the past two weeks. This was an "all-hands" meeting to
+identify what's blocking the deal and address each issue head-on. The deal value is significant
+($120K/month steady state) and timing matters — they have a board meeting on June 15 and want
+the decision made before then.
+
+Obstacles Identified:
+
+Obstacle 1 — CIO sign-off pending:
+- Karen has not yet given her formal endorsement. She wants to see one more reference customer
+  in healthcare specifically (not just any SaaS company).
+- She also wants to talk directly to the AWS Healthcare GTM team before signing.
+- Karen: "I need to be able to tell my board I had a 1:1 with AWS' healthcare leadership before
+  we commit to a 3-year migration."
+
+Obstacle 2 — CFO budget approval:
+- David needs the migration budget approved at the next finance committee (May 25).
+- He said the business case is "directionally good" but the committee will want to see specific
+  financial commitments — savings, ROI timeline, exit costs if they need to pivot.
+- He asked if AWS can provide formal documentation of cost savings claims (not just slides).
+
+Obstacle 3 — Procurement red flags:
+- Jen flagged 4 specific concerns with the AWS Customer Agreement:
+  1. Liability cap — they want it raised from 12 months of fees to 24 months
+  2. Data deletion clauses — they want a more detailed exit/data extraction commitment
+  3. SLA credits — they want the 99.99% SLA changed to financially backed
+  4. Auto-renewal language — they want it removed entirely
+- Jen explicitly said: "If we can't address these contract issues, this deal is dead."
+
+Obstacle 4 — Internal champion is leaving:
+- Karen mentioned that her VP of Engineering (the project champion) is leaving HealthBridge in
+  6 weeks. They have not announced his replacement yet.
+- This is a major risk — without him, the deal could lose momentum even after we resolve
+  the contract issues.
+
+Obstacle 5 — Competitor activity:
+- A competing partner (we suspect Microsoft) made a last-minute pitch to Karen last week
+  offering a "free 90-day pilot."
+- Karen is not seriously considering it but it has slowed our momentum.
+
+What HealthBridge Wants from Us:
+
+1. CIO-to-AWS-leadership 1:1 within the next 2 weeks.
+2. A reference call with at least one healthcare customer running on AWS at scale.
+3. Formal written commitment on the cost savings projections — they want it in the SOW or as an
+   addendum, not just slides.
+4. Procurement red-line review — Jen wants AWS legal to engage their counsel directly to negotiate
+   the 4 contract issues.
+5. A retention strategy / replacement champion plan in case the VP leaves before signing.
+
+Decisions Made:
+- Christina will schedule the AWS Healthcare GTM exec meeting for next week.
+- We will provide 2 healthcare reference customers (with customer permission) within 5 days.
+- AWS legal will be engaged to negotiate the 4 contract red-lines.
+- We will provide a written cost savings commitment as an SOW addendum.
+- Christina will work with David to align on the May 25 finance committee timing.
+
+Action Items:
+- Healthcare GTM 1:1: Christina, by May 22
+- Reference customers: Christina + Healthcare Industry team, by May 23
+- Contract red-line response: AWS Legal + Christina, by May 30
+- Cost savings addendum: Ming + Pricing team, by May 28
+- Replacement champion plan: Karen + Christina, by June 1
+
+Customer Sentiment: Wants to close. Frustrated by procurement and timing issues but not the
+solution itself. Christina believes 70% probability we close before June 15.
+
+Stage: Late Negotiation
+Deal Size: $1.44M ARR (3-year contract)
+Hard Deadline: June 15 board meeting
+Risk Level: Medium-High (multiple obstacles, narrow window)

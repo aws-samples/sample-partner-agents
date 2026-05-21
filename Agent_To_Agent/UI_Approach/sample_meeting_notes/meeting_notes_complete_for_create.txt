@@ -1,0 +1,65 @@
+# DEMO DATA — All companies, people, addresses, websites, phone numbers,
+# and financial figures in this file are fictional. Names follow the AWS
+# canonical fictional-persona conventions ("AnyCompany", "Saanvi Sarkar",
+# etc.). Domains use RFC 2606 reserved test TLDs (.example.com) and
+# cannot be registered as real sites.
+
+Meeting Notes — Discovery and Solution Fit Discussion with AnyCompany Financial Services
+Date: May 19, 2026
+Attendees: Saanvi Sarkar (VP Engineering, AnyCompany Financial), Carlos Salazar (CTO, AnyCompany Financial),
+            Ming Zhu (AWS Partner SA)
+
+Customer Profile:
+AnyCompany Financial Services Inc. is a mid-market fintech company with 200+ employees, headquartered
+at 100 Example Plaza, Suite 4200, New York, NY 10001, United States. Their website is
+www.anycompany.example.com. AnyCompany Financial operates in the Financial Services industry and
+processes approximately $2 billion in annual transactions across their core trading
+and settlement platform.
+
+Business Problem:
+AnyCompany Financial is currently running their core trading platform on-premises with aging
+infrastructure that is now five years old. Their VMware licenses are coming up for renewal
+in Q4 2026 at a $400K annual cost, and they need to replace approximately 45 VMs running
+Java microservices. Their existing 4-hour RPO is unacceptable for their trading workloads,
+and recent SEC compliance updates (17a-4) now require cloud-hosted financial systems with
+sub-minute failover. The combined pressure of expiring VMware costs, aging hardware,
+compliance requirements, and scalability needs during peak market hours has made cloud
+migration a board-level priority for 2026.
+
+Project Scope and Use Case:
+The primary use case is Application Migration — specifically a lift-and-shift modernization
+of AnyCompany Financial's core trading platform from on-premises VMware to AWS. Scope includes:
+45 VMs migrating to ECS/EKS for containerized microservices, 3 Oracle databases moving
+to Aurora PostgreSQL, and a real-time event streaming layer migrating to Amazon MSK.
+Sub-minute RPO/RTO using Multi-AZ Aurora with cross-region disaster recovery is required.
+
+Solution and Delivery Model:
+We're proposing a Managed Services delivery model where our team handles the migration
+end-to-end and provides ongoing operations. Solution description: AWS-native managed
+migration and modernization services covering containerization (ECS/EKS), database
+migration (Oracle to Aurora PostgreSQL), event streaming (Amazon MSK), and Multi-AZ
+disaster recovery architecture. Estimated monthly AWS spend post-migration: $35,000
+with a 1-year Compute Savings Plan committed.
+
+Sales Activity to Date:
+Conducted POC / Demo — completed a 30-day Aurora PostgreSQL compatibility POC with
+AnyCompany Financial's reporting workload (~10 servers, 2 TB data). The POC demonstrated 40% query
+performance improvement over their existing Oracle setup, and they have signed off on
+moving forward with the full migration.
+
+AWS Involvement Type:
+This is a Co-Sell opportunity. AnyCompany Financial has explicitly requested that AWS Sales be actively
+engaged through the migration. The AWS Partner Account Manager is already attending
+their architecture reviews, and they want AWS' Financial Services GTM team to
+present at their executive board meeting on June 15, 2026.
+
+Target Close Date: 2026-09-30
+Expected Customer Spend: $35,000 USD monthly
+Opportunity Type: Net New Business
+
+Primary Contact:
+Saanvi Sarkar, Vice President of Engineering
+Email: saanvi.sarkar@anycompany.example.com
+Phone: +1 (212) 555-0147
+
+Decision Maker: Carlos Salazar, Chief Technology Officer

@@ -1,0 +1,54 @@
+Meeting Notes — Technical Architecture Review with FinSecure Bank
+Date: May 18, 2026
+Attendees: Daniel Kim (Chief Architect, FinSecure), Priya Shah (Head of Security, FinSecure),
+            Marco Lopez (Cloud Lead, FinSecure), Ming Zhu (AWS Partner SA), Chidu Muthappan (AWS Partner SA)
+
+Background:
+This was the third meeting with FinSecure Bank, a regional financial services company.
+The deal is in technical validation stage. Stakeholders have endorsed the migration in principle
+but the architecture and security teams need to validate that AWS meets their compliance bar
+before signing the SOW. FinSecure operates under SOC 2 Type II, PCI-DSS, and SEC 17a-4 requirements.
+
+Discussion Highlights:
+
+Security Team Concerns (raised by Priya):
+- Concern about data residency: their regulator requires customer financial records to remain in US-East
+  region only. They want a written commitment.
+- Asked specifically about AWS KMS — whether they can use customer-managed keys (CMKs) and if there's
+  any scenario where AWS engineers can decrypt their data.
+- Wants a copy of the latest SOC 2 Type II report from AWS Artifact.
+- Asked about CloudTrail log immutability — requirement is 7 years of tamper-evident audit logs.
+- Pushed back on multi-tenant services (RDS, S3) — wants assurance about isolation.
+
+Architecture Team Concerns (raised by Daniel):
+- Their core trading platform requires sub-millisecond latency between application and database.
+  Asked if Aurora can meet this. We discussed RDS Proxy and read replicas.
+- Want to validate failover RPO/RTO — current spec is RPO < 60 seconds, RTO < 5 minutes.
+- Asked if we can do a Well-Architected Review focused on the Reliability and Security pillars.
+- Marco suggested running a 30-day proof-of-concept on a non-critical workload (their reporting system)
+  before committing to the trading platform migration.
+
+Decisions Made:
+- FinSecure agreed to schedule a Well-Architected Review for the second week of June.
+- Priya will send us their compliance requirements doc (CRD-2026-04) by Friday.
+- They want a custom security architecture document covering KMS, CloudTrail, GuardDuty, and Macie
+  before any contract is signed.
+- AWS to provide the latest SOC 2 Type II from Artifact.
+- 30-day POC on the reporting workload approved in principle, contracts pending.
+
+Open Questions / Blockers:
+- Their general counsel needs to review the AWS Customer Agreement before signing.
+- Procurement asked for AWS' Business Associate Agreement template (not a HIPAA shop, but precautionary).
+- Daniel wants comparable benchmark data showing Aurora vs. their current Oracle DB latency.
+
+Customer Sentiment: Engaged but cautious. They want to migrate but won't move until security and
+compliance teams sign off.
+
+Expected Next Steps from Customer Side:
+- Daniel will send architecture diagrams of trading platform by next Tuesday
+- Priya will deliver compliance requirements doc by Friday
+- Marco will scope the POC workload (10 servers, ~2 TB data)
+
+Stage: Technical Validation
+Anticipated Close: End of Q3 2026 if WAR and security review go well
+Estimated Monthly Spend: $45K (POC) → $180K (full production)

@@ -1,0 +1,64 @@
+Meeting Notes — Renewal Risk Discussion with GreenLogistics
+Date: May 18, 2026
+Attendees: Robert Yang (CIO, GreenLogistics), Lisa Brand (Director of Cloud Operations, GreenLogistics),
+            Ming Zhu (AWS Partner SA), Tuan Vo (AWS Partner SA)
+
+Background:
+GreenLogistics is an existing AWS customer (3-year customer, ~$60K/month spend). Their commitment
+agreement comes up for renewal in 90 days. We requested this meeting after our automated retention
+analytics flagged the account as "at-risk." Robert was direct: they are seriously considering moving
+to Azure for their next term. This meeting was a candid conversation about what's gone wrong and
+what we'd need to do to keep their business.
+
+What We Heard (the bad news):
+
+Issue 1 — Cost overruns:
+- Their AWS bill grew 40% YoY without a corresponding increase in workload.
+- Robert: "I keep getting calls from my CFO asking why our cloud bill is so high."
+- Lisa pointed out specific issues: orphaned EBS volumes, oversized RDS instances, idle NAT gateways.
+- They feel they have not been getting proactive cost optimization advice from us.
+
+Issue 2 — Slow support response:
+- Two P2 support tickets from last quarter took >24 hours for first response.
+- They are on Business Support tier and feel they should be getting Enterprise-level responsiveness.
+- Robert mentioned that Azure has offered them a dedicated Customer Success Manager included
+  with their tier.
+
+Issue 3 — Missed feature opportunities:
+- They have been running their own Kubernetes cluster on EC2 instead of EKS (and didn't know about
+  EKS Auto Mode until Lisa stumbled across it).
+- They are still using S3 standard for archival data that should be in Glacier — would save them
+  ~$8K/month.
+- They're using self-managed PostgreSQL on EC2 instead of Aurora.
+- Robert: "We feel like we're paying for a Ferrari but driving a Honda."
+
+Issue 4 — Competitive pressure:
+- Microsoft has offered them a 20% discount on equivalent Azure services for a 3-year commitment.
+- Microsoft is also offering free migration consulting and a dedicated TAM.
+- Robert is meeting Microsoft's enterprise team next week.
+
+What They Want from Us (to retain):
+
+1. A formal cost optimization assessment — they want a detailed report showing where they can save
+   money. Lisa asked specifically for a Trusted Advisor review and a Compute Optimizer analysis.
+2. Migration plan for their self-managed services to AWS-managed equivalents (EKS, Aurora, Glacier).
+3. An Enterprise Support evaluation — they want to know what they'd get for the upgrade cost.
+4. Executive escalation to a senior AWS person (VP-level) to demonstrate AWS' commitment to them.
+5. A multi-year renewal proposal with built-in cost guarantees and committed savings.
+6. A dedicated AWS Solutions Architect for their account.
+
+Robert's Quote: "We're not in love with Azure. But you guys have been on autopilot. We need to see
+that AWS still wants our business."
+
+Decisions Made:
+- Tuan committed to escalating internally. AWS will engage a Senior Account Manager and Solutions Architect.
+- Lisa will share their current architecture and 12 months of usage data by Wednesday.
+- We will deliver a cost optimization report and modernization roadmap within 2 weeks.
+- Renewal decision deadline: 90 days from today.
+
+Stage: At Risk — Closed Lost is a real possibility
+Renewal Value: $720K/year ($60K/mo) — losing this account would hurt our retention metrics
+Time-Sensitive: Microsoft's offer expires June 15
+
+Customer Sentiment: Frustrated but not gone. They want to stay if we step up. The next 30 days
+are critical.

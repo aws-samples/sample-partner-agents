@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent-to-Agent Demo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v={{ css_version }}">
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Agent-to-Agent Demo</h1>
+        <p class="subtitle">Custom Orchestrator Agent ↔ AWS Partner Central MCP Agent</p>
+        
+        <div class="architecture">
+            <pre>
+┌─────────────────────────────────────┐         ┌─────────────────────────────────────┐
+│       YOUR ORCHESTRATOR AGENT       │         │   AWS PARTNER CENTRAL MCP AGENT     │
+│                                     │         │                                     │
+│  • Gathers context (files, Slack)   │  MCP    │  • Creates opportunities from       │
+│  • Connects to CRM (HubSpot,       │Protocol │    natural language or documents    │
+│    Salesforce, Pipedrive)           │ ──────► │  • Enriches customer data from      │
+│  • Maps CRM data to PC format       │ SigV4   │    publicly available sources       │
+│  • AI-powered analysis (Bedrock)    │         │  • Validates against PC rules       │
+│  • Decides WHAT to create/update    │         │  • Human-in-the-loop approval       │
+│                                     │         │  • Executes Partner Central APIs    │
+└─────────────────────────────────────┘         └─────────────────────────────────────┘
+            </pre>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('crm')">📊 CRM → ACE</button>
+            <button class="tab" onclick="showTab('update')">✏️ Update Next Steps</button>
+            <button class="tab" onclick="showTab('create-notes')">📝 Create from Notes</button>
+            <button class="tab" onclick="showTab('chat')">💬 Ask Questions</button>
+        </div>
+        
+        <!-- CRM Panel -->
+        <div id="crm-panel" class="panel active">
+            <div class="step-indicator">
+                <div class="step active" id="step1">
+                    <span class="step-num">1</span>
+                    <span>Select CRM Record</span>
+                </div>
+                <div class="step" id="step2">
+                    <span class="step-num">2</span>
+                    <span>Create ACE Opportunity</span>
+                </div>
+                <div class="step" id="step3">
+                    <span class="step-num">3</span>
+                    <span>Success</span>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="crm-type">CRM System</label>
+                    <select id="crm-type" onchange="updateCrmUI()">
+                        <!-- Populated from /api/crm/specs on page load -->
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="crm-token" id="crm-token-label">Bearer Token</label>
+                    <input type="password" id="crm-token" placeholder="Enter your bearer token" value="">
+                </div>
+            </div>
+            
+            <div class="form-row" id="crm-instance-row" style="display: none;">
+                <div class="form-group">
+                    <label for="crm-instance-url" id="crm-instance-label">Instance URL</label>
+                    <input type="text" id="crm-instance-url" placeholder="" value="">
+                </div>
+            </div>
+            
+            <button class="btn btn-primary" onclick="loadCrmRecords()" id="load-crm-btn">Load Records</button>
+            
+            <div class="loading" id="deals-loading">
+                <div class="spinner"></div>
+                <p id="loading-text">Loading records from CRM...</p>
+            </div>
+            
+            <div class="deals-list" id="deals-list"></div>
+            
+            <div style="margin-top: 20px; display: none;" id="create-section">
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button class="btn btn-primary" onclick="createOpportunity()" id="create-btn">
+                        🚀 Create ACE Opportunity (Direct API)
+                    </button>
+                    <button class="btn btn-secondary" onclick="openCreateViaAgentModal()" id="create-via-agent-btn">
+                        🤖 Create via Partner Central Agent
+                    </button>
+                </div>
+                <p style="font-size: 12px; color: #aaa; margin-top: 8px;">
+                    <strong>Direct API</strong>: Fast, deterministic — uses CreateOpportunity API directly with mapped CRM data.<br>
+                    <strong>Via Agent</strong>: Conversational — the Partner Central Agent extracts, enriches, validates, and asks for approval before creating.
+                </p>
+            </div>
+            
+            <div class="result" id="crm-result"></div>
+        </div>
+        
+        <!-- Create via Agent Modal -->
+        <div class="modal-overlay" id="create-agent-modal" onclick="if (event.target === this) closeCreateAgentModal()">
+            <div class="modal-content" style="max-width: 800px;">
+                <button class="modal-close" onclick="closeCreateAgentModal()" aria-label="Close">×</button>
+                <div class="modal-title">🤖 Create ACE Opportunity via Partner Central Agent</div>
+                <div class="modal-subtitle" id="create-agent-subtitle">From HubSpot Deal</div>
+                
+                <div style="margin-top: 12px; padding: 8px 12px; background: rgba(0,212,255,0.05); border-left: 3px solid #00d4ff; border-radius: 4px;">
+                    <label style="display: flex; align-items: center; cursor: pointer; font-size: 13px;">
+                        <input type="checkbox" id="create-agent-submit-to-aws" style="width: auto; margin-right: 8px;">
+                        Also submit to AWS for review after creation
+                    </label>
+                    <p style="font-size: 11px; color: #888; margin-top: 4px; margin-left: 24px;">
+                        Default is <strong>off</strong> — opportunity stops at <em>Pending Submission</em> so you can review first.
+                    </p>
+                </div>
+                
+                <div id="create-agent-conversation" style="margin-top: 20px;">
+                    <div id="create-agent-messages" style="max-height: 450px; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 8px; padding: 15px; margin-bottom: 15px;"></div>
+                    
+                    <div style="display: flex; gap: 10px;" id="create-agent-input-container">
+                        <input type="text" id="create-agent-input" placeholder="Reply to the agent..." style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #1a1a2e; color: #fff;" onkeypress="if(event.key==='Enter') sendCreateAgentReply()">
+                        <button class="btn btn-primary" onclick="sendCreateAgentReply()">Send</button>
+                    </div>
+                    <div id="create-agent-loading" style="display: none; text-align: center; padding: 10px; color: #00d4ff;">
+                        ⏳ Agent is thinking...
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Update Panel -->
+        <div id="update-panel" class="panel">
+            <div class="form-group">
+                <label>Opportunity ID</label>
+                <input type="text" id="opp-id" placeholder="O12345678" value="">
+            </div>
+            
+            <div class="form-group">
+                <label>Meeting Notes / Context</label>
+                <textarea id="meeting-notes" placeholder="Paste meeting notes, customer feedback, or any context here..."></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Or upload meeting notes / context files (you can select multiple)</label>
+                <input type="file" id="meeting-files" multiple accept=".txt,.md,.json,.csv,.log,.yaml,.yml" style="padding: 10px;" onchange="onMeetingFilesSelected()">
+                <div id="meeting-files-list" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;"></div>
+                <p style="font-size: 12px; color: #888; margin-top: 6px;">
+                    💡 Try files from <code>sample_meeting_notes/</code> for different scenarios (discovery, technical validation, funding, renewal, closing).
+                </p>
+            </div>
+            
+            <div class="form-group">
+                <label>AI Prompt (optional)</label>
+                <input type="text" id="ai-prompt" placeholder="Generate next steps based on the meeting notes" value="Generate next steps based on the meeting notes">
+            </div>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="dry-run" style="width: auto; margin-right: 8px;" checked>
+                    Dry Run (generate but don't update)
+                </label>
+            </div>
+            
+            <button class="btn btn-primary" onclick="updateNextSteps()">
+                🤖 Generate Next Steps
+            </button>
+            
+            <div class="loading" id="update-loading">
+                <div class="spinner"></div>
+                <p>AI is analyzing context and generating next steps...</p>
+            </div>
+            
+            <!-- Editable Next Steps Section -->
+            <div class="editable-section" id="editable-section">
+                <label>Generated Next Steps (editable) <span id="char-count" style="color: #888; font-size: 12px;">0/255</span></label>
+                <textarea id="generated-next-steps" maxlength="255" oninput="updateCharCount()"></textarea>
+                <div class="edit-buttons">
+                    <button class="btn btn-primary btn-small" onclick="submitNextSteps()">
+                        ✓ Submit to Partner Central
+                    </button>
+                    <button class="btn btn-secondary btn-small" onclick="regenerateNextSteps()">
+                        🔄 Regenerate
+                    </button>
+                </div>
+            </div>
+            
+            <div class="approval-box" id="approval-box">
+                <h3>🔐 Approval Required</h3>
+                <p>Partner Central MCP Agent is requesting approval to update the opportunity.</p>
+                <div id="approval-details"></div>
+                <div class="approval-buttons">
+                    <button class="btn btn-approve" onclick="sendApproval('approve')">✓ Approve</button>
+                    <button class="btn btn-reject" onclick="sendApproval('reject')">✗ Reject</button>
+                </div>
+            </div>
+            
+            <div class="result" id="update-result"></div>
+        </div>
+        
+        <!-- Create from Notes Panel -->
+        <div id="create-notes-panel" class="panel">
+            <h3 style="margin-bottom: 15px;">🤖 Create Opportunity via Partner Central Agent</h3>
+            <p style="color: #aaa; margin-bottom: 20px;">
+                Paste meeting notes, call transcripts, or a deal description below. The Partner Central Agent will extract customer details, enrich with public data, validate against AWS requirements, and create the opportunity — all from your notes.
+            </p>
+            
+            <div class="form-group">
+                <label>Meeting Notes / Deal Description</label>
+                <textarea id="create-notes-input" rows="10" placeholder="Example: Met with Acme Corp yesterday. They want to migrate their on-prem data warehouse to Amazon Redshift. Expected monthly AWS spend around $40K. Target go-live by end of Q3 2026. Main contact is Jane Smith, VP of Engineering (jane@acme.com). They're in the financial services industry, based in New York."></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label>Or upload meeting notes / context files (you can select multiple)</label>
+                <input type="file" id="create-notes-files" multiple accept=".txt,.md,.json,.csv,.log,.yaml,.yml" style="padding: 10px;" onchange="onCreateNotesFilesSelected()">
+                <div id="create-notes-files-list" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;"></div>
+                <p style="font-size: 12px; color: #888; margin-top: 6px;">
+                    💡 Inline notes and uploaded files are combined and sent to the agent as one context bundle. Try files from <code>sample_meeting_notes/</code>.
+                </p>
+            </div>
+            
+            <div class="form-group">
+                <label>Additional Instructions (optional)</label>
+                <input type="text" id="create-notes-instructions" placeholder="e.g., Set opportunity type to Expansion, use delivery model SaaS">
+            </div>
+            
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="create-notes-submit-to-aws" style="width: auto; margin-right: 8px;">
+                    Submit to AWS for review after creation
+                </label>
+                <p style="font-size: 12px; color: #888; margin-top: 4px; margin-left: 24px;">
+                    💡 Leave unchecked to stop at <strong>Pending Submission</strong> — gives you a chance to review the opportunity in Partner Central before submitting. The agent will ask for confirmation before any AWS submission.
+                </p>
+            </div>
+            
+            <button class="btn btn-primary" onclick="createFromNotes()" id="create-notes-btn">
+                🤖 Create Opportunity via Agent
+            </button>
+            
+            <div id="create-notes-status" style="margin-top: 20px; display: none;">
+                <div class="loading" id="create-notes-loading" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Agent is analyzing your notes and creating the opportunity...</p>
+                </div>
+                <div id="create-notes-result"></div>
+            </div>
+            
+            <div id="create-notes-conversation" style="margin-top: 20px; display: none;">
+                <h4 style="margin-bottom: 10px;">Agent Conversation</h4>
+                <div id="create-notes-messages" style="max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 8px; padding: 15px;"></div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 10px;" id="create-notes-reply-container" class="hidden">
+                    <input type="text" id="create-notes-reply" placeholder="Reply to the agent..." style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #1a1a2e; color: #fff;" onkeypress="if(event.key==='Enter') sendCreateNotesReply()">
+                    <button class="btn btn-primary" onclick="sendCreateNotesReply()">Reply</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Chat Panel -->
+        <div id="chat-panel" class="panel">
+            <div class="form-group">
+                <label>Opportunity ID (for context)</label>
+                <input type="text" id="chat-opp-id" placeholder="O12345678" value="">
+            </div>
+            
+            <p style="color: #888; font-size: 13px; margin-bottom: 10px;">
+                Ask questions about your opportunities using natural language. The Partner Central MCP Agent will answer.
+            </p>
+            
+            <div class="question-category">📊 Pipeline Insights</div>
+            <div class="example-questions">
+                <span class="example-q" onclick="askExample(this)">Show at-risk opportunities in my pipeline</span>
+                <span class="example-q" onclick="askExample(this)">Analyze stage progression for this opportunity</span>
+                <span class="example-q" onclick="askExample(this)">Why did similar opportunities get closed-lost?</span>
+            </div>
+            
+            <div class="question-category">📋 Opportunity Summary</div>
+            <div class="example-questions">
+                <span class="example-q" onclick="askExample(this)">Give me a summary of this opportunity</span>
+                <span class="example-q" onclick="askExample(this)">What is the review status?</span>
+                <span class="example-q" onclick="askExample(this)">Show me the complete JSON payload</span>
+            </div>
+            
+            <div class="question-category">🎯 Sales Play Generation</div>
+            <div class="example-questions">
+                <span class="example-q" onclick="askExample(this)">Generate a sales play for this opportunity</span>
+                <span class="example-q" onclick="askExample(this)">What AWS solutions should I recommend?</span>
+                <span class="example-q" onclick="askExample(this)">Create a customized sales strategy</span>
+            </div>
+            
+            <div class="question-category">🏢 Customer Profile</div>
+            <div class="example-questions">
+                <span class="example-q" onclick="askExample(this)">Create a customer profile for this account</span>
+                <span class="example-q" onclick="askExample(this)">What industry is this customer in?</span>
+                <span class="example-q" onclick="askExample(this)">What are recent developments for this company?</span>
+            </div>
+            
+            <div class="question-category">💡 Solution & Funding</div>
+            <div class="example-questions">
+                <span class="example-q" onclick="askExample(this)">What solutions match this opportunity?</span>
+                <span class="example-q" onclick="askExample(this)">What funding programs is this eligible for?</span>
+                <span class="example-q" onclick="askExample(this)">Estimate funding amount for this deal</span>
+            </div>
+            
+            <div class="question-category">📈 Next Steps & Progression</div>
+            <div class="example-questions">
+                <span class="example-q" onclick="askExample(this)">What are the recommended next steps?</span>
+                <span class="example-q" onclick="askExample(this)">How do I progress this to the next stage?</span>
+                <span class="example-q" onclick="askExample(this)">What documents do I need to upload?</span>
+            </div>
+            
+            <div class="chat-container">
+                <div class="chat-messages" id="chat-messages">
+                    <div class="message system">
+                        Start a conversation by entering an Opportunity ID and asking a question.
+                    </div>
+                </div>
+                
+                <div class="chat-input-container">
+                    <input type="text" class="chat-input" id="chat-input" 
+                           placeholder="Ask a question about the opportunity..." 
+                           onkeypress="if(event.key==='Enter') sendChatMessage()">
+                    <button class="btn btn-primary" onclick="sendChatMessage()">Send</button>
+                    <button class="btn btn-secondary" onclick="clearChat()">Clear</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Record Details Modal -->
+    <div class="modal-overlay" id="details-modal" onclick="if (event.target === this) closeDetailsModal()">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeDetailsModal()" aria-label="Close">×</button>
+            <div class="modal-title" id="modal-title">Record Details</div>
+            <div class="modal-subtitle" id="modal-subtitle"></div>
+            <div id="modal-body">
+                <div class="loading" style="display: block;">
+                    <div class="spinner"></div>
+                    <p>Loading details...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ js_version }}"></script>
+</body>
+</html>

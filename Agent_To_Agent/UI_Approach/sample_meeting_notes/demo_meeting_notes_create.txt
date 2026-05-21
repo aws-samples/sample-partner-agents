@@ -1,0 +1,41 @@
+# DEMO DATA — All companies, people, addresses, websites, phone numbers,
+# and financial figures in this file are fictional. Names follow the AWS
+# canonical fictional-persona conventions ("AnyCompany", "Saanvi Sarkar",
+# etc.). Domains use RFC 2606 reserved test TLDs (.example.com).
+
+Meeting Notes — Discovery Call with AnyCompany Financial Services
+Date: May 14, 2026
+Attendees: Saanvi Sarkar (VP Engineering, AnyCompany Financial), Carlos Salazar (CTO, AnyCompany Financial), Ming Zhu (AWS Partner SA)
+
+Company: AnyCompany Financial Services Inc.
+Industry: Financial Services
+Website: www.anycompany.example.com
+Location: 100 Example Plaza, Suite 4200, New York, NY 10001, United States
+
+Summary:
+AnyCompany Financial is a mid-market fintech company with 200+ employees processing $2B in annual transactions. They currently run their core trading platform on-premises with aging infrastructure (5-year-old servers, VMware licenses expiring Q4 2026). They want to migrate their entire trading platform to AWS to reduce latency, improve scalability during market hours, and meet new SEC compliance requirements for cloud-hosted financial systems.
+
+Key Discussion Points:
+1. Migration scope: 45 VMs running Java microservices, 3 Oracle databases (moving to Aurora PostgreSQL), and a real-time event streaming layer (moving to Amazon MSK).
+2. Timeline: Want to complete migration by end of Q1 2027. Pilot environment by September 2026.
+3. Budget: Estimated $35,000/month AWS spend post-migration. Willing to commit to a 1-year Savings Plan.
+4. Compliance: Need SOC 2 Type II and SEC 17a-4 compliance. AWS Artifact and CloudTrail are key requirements.
+5. Current pain points: 4-hour RPO is unacceptable for their trading platform. Need sub-minute failover with Multi-AZ Aurora and cross-region DR.
+
+Next Steps Discussed:
+- Schedule Well-Architected Review with AWS SA team (week of May 26)
+- AnyCompany Financial to provide current architecture diagrams and network topology
+- Explore MAP funding eligibility for the migration
+- Set up sandbox environment for Aurora PostgreSQL compatibility testing
+
+Primary Contact:
+Saanvi Sarkar, VP Engineering
+Email: saanvi.sarkar@anycompany.example.com
+Phone: +12125550147
+Title: Vice President of Engineering
+
+Decision Maker: Carlos Salazar, CTO
+
+Opportunity Type: Net New Business
+Delivery Model: Managed Services
+Expected Close: 2026-12-31

@@ -1,0 +1,41 @@
+Meeting Notes — Discovery Call with Acme Manufacturing
+Date: May 18, 2026
+Attendees: Sarah Patel (VP Engineering, Acme), Tom Vargas (IT Director, Acme), Ming Zhu (AWS Partner SA)
+
+Background:
+This was an initial discovery call. Acme Manufacturing reached out via our website contact form
+after seeing a competitor case study. They run an aging on-prem ERP system and are starting to
+evaluate cloud options for the first time. They are at the very beginning of their journey and
+have not yet made any decisions.
+
+Discussion Highlights:
+- Sarah described their current pain: 4-hour batch jobs that run overnight, frequent hardware failures,
+  $80K/year in VMware licenses up for renewal in Q1 2027.
+- Tom mentioned the board has asked them to "explore cloud" but hasn't given them a budget or timeline yet.
+- Acme has zero AWS experience — no AWS account, no AWS-skilled engineers on staff.
+- They asked basic questions: "what is the difference between AWS and Azure?", "how does AWS pricing work?",
+  "can we move our SAP system?".
+- Sarah is the technical lead but not the decision maker. The CFO will sign off on any cloud spend.
+- They are also talking to a Microsoft Azure rep next week.
+
+Customer's Current State:
+- 200 employees, $50M annual revenue, mid-market manufacturing
+- All workloads on-prem (1 small data center in Ohio)
+- Critical systems: SAP ERP, custom-built MES (manufacturing execution system), file shares, email
+- IT team of 4 — Sarah, Tom, and 2 sysadmins. No cloud experience.
+
+What Acme Needs Next:
+- High-level overview of AWS for manufacturing
+- Pricing/cost comparison vs. on-prem and vs. Azure
+- Reference customers in their industry
+- Help building the business case for the CFO
+- Roadmap for getting started — they don't know what step 1 looks like
+
+Action Items Discussed:
+- Sarah will share a network diagram and infrastructure list with us by end of week
+- We agreed to schedule a follow-up technical deep-dive in 2 weeks
+- Sarah asked for the AWS Well-Architected Framework whitepaper
+
+Sentiment: Cautiously interested. No commitment yet. They could easily go to Azure if we don't move fast.
+
+Next Meeting: TBD — likely 2 weeks out

@@ -1,0 +1,56 @@
+Meeting Notes — Migration Planning Workshop with NovaTech Solutions
+Date: May 18, 2026
+Attendees: Sarah Chen (VP Engineering, NovaTech), Mike Rodriguez (CTO, NovaTech),
+            Ming Zhu (AWS Partner SA), Christina Passmore (AWS Partner Account Manager)
+
+Background:
+NovaTech Solutions is a fintech that has been working with us for ~3 months. The opportunity is qualified
+and they are ready to commit to a migration. This meeting was a planning workshop to scope the work and
+identify funding opportunities. Mike (CTO) confirmed that budget is approved internally for the migration
+but they are looking for AWS funding to offset the migration tooling and training costs.
+
+Discussion Highlights:
+
+Migration Scope Confirmed:
+- 45 VMs (Java microservices) → ECS/EKS
+- 3 Oracle databases → Aurora PostgreSQL
+- Real-time event streaming layer → Amazon MSK
+- Estimated effort: ~6 months end-to-end, ~$250K in third-party migration tooling
+
+Budget & Spend Profile:
+- Steady-state AWS spend post-migration: $35K/month
+- They are willing to commit to a 1-year Compute Savings Plan
+- One-time migration costs estimated at $400K (tooling + training + parallel run)
+
+Funding Discussion (this is the main reason for the meeting):
+- Mike specifically asked: "What AWS funding programs are available to help with our migration?"
+- Christina mentioned MAP (Migration Acceleration Program) as the natural fit
+- We discussed MAP eligibility criteria — they qualify based on workload size and commitment
+- Mike asked about funding amounts. We need to confirm specifics with the AWS rep
+- Sarah asked if they could also use POC funding for the Aurora benchmark testing they want to do
+- Christina noted that the AWS rep will need to formally submit the funding request
+
+Key Asks from NovaTech:
+- They want a written estimate of total AWS funding they could receive (MAP + POC)
+- They need help building the migration business case for their board (CFO presenting end of month)
+- They want a proposed funding package by next Friday — this is a hard deadline
+- Sarah asked for AWS' migration tooling recommendations (DMS, MGN, Application Migration Service)
+
+Decisions Made:
+- We will submit a MAP funding request on their behalf this week
+- Christina will engage the AWS Solutions Architect team to estimate funding amounts
+- We will deliver a board-ready migration business case by end of next week
+- Aurora POC can start as soon as funding is in place (likely early June)
+
+Action Items:
+- Submit MAP funding request — owner: Christina, due date: end of this week
+- Build business case deck — owner: Ming, due: next Friday
+- Confirm POC scope and timeline — owner: Sarah, due: Wednesday
+- Lock 1-year Savings Plan term — owner: Mike, contingent on funding approval
+
+Customer Sentiment: Highly engaged and motivated. They want to move fast — Mike explicitly
+said "we are ready to sign a SOW once funding is confirmed."
+
+Stage: Committed (waiting on funding to formalize SOW)
+Expected Close: End of Q2 2026 (June 30)
+Estimated Total Deal Value: $420K first year, $35K/mo recurring
