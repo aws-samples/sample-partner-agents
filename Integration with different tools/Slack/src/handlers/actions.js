@@ -18,11 +18,16 @@ function registerActionHandlers(app, sessionStore, rateLimiter, dispatchJob) {
   app.action('approve_write', async ({ body, ack, context }) => {
     await ack();
     if (_isSlackRetry(context)) return;
-    // Dedupe by action_ts (unique per click) so Slack retries don't double-dispatch
-    const dedupeKey = 'action:' + body.actions[0].action_ts + ':' + body.actions[0].value;
-    if (await isDuplicate(dedupeKey)) return;
 
     const { toolUseId, sessionId } = JSON.parse(body.actions[0].value);
+
+    // Dedupe by (sessionId, toolUseId, decision) — these stay stable across
+    // Slack retries when the Lambda is slow to ack. A previous version keyed
+    // on body.actions[0].action_ts which changes per retry, allowing duplicate
+    // approval jobs to fire and creating duplicate opportunities downstream.
+    const dedupeKey = 'approval:' + sessionId + ':' + toolUseId + ':approve';
+    if (await isDuplicate(dedupeKey)) return;
+
     await dispatchJob({
       type: 'approval',
       sessionId,
@@ -64,7 +69,8 @@ function registerActionHandlers(app, sessionStore, rateLimiter, dispatchJob) {
   app.view('reject_submit', async ({ ack, view, body, context }) => {
     await ack();
     if (_isSlackRetry(context)) return;
-    const dedupeKey = 'view:' + view.id + ':reject';
+    const { toolUseId, sessionId } = JSON.parse(JSON.parse(view.private_metadata).actionValue);
+    const dedupeKey = 'approval:' + sessionId + ':' + toolUseId + ':reject';
     if (await isDuplicate(dedupeKey)) return;
     await _enqueueModalSubmit('reject', view, body, dispatchJob);
   });
@@ -72,7 +78,8 @@ function registerActionHandlers(app, sessionStore, rateLimiter, dispatchJob) {
   app.view('override_submit', async ({ ack, view, body, context }) => {
     await ack();
     if (_isSlackRetry(context)) return;
-    const dedupeKey = 'view:' + view.id + ':override';
+    const { toolUseId, sessionId } = JSON.parse(JSON.parse(view.private_metadata).actionValue);
+    const dedupeKey = 'approval:' + sessionId + ':' + toolUseId + ':override';
     if (await isDuplicate(dedupeKey)) return;
     await _enqueueModalSubmit('override', view, body, dispatchJob);
   });

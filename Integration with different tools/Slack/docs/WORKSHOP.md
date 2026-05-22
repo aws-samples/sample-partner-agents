@@ -94,7 +94,7 @@ If `aws sts get-caller-identity --profile <yours>` already prints your account I
    ```
    Paste the keys when prompted. Region: `us-east-1`. Output: `json`.
 
-### Option B — Isengard or AWS IAM Identity Center (Amazon-internal)
+### Option B — AWS IAM Identity Center (SSO)
 
 ```bash
 aws configure sso --profile pc-workshop
@@ -174,13 +174,14 @@ The Partner Central API the bot uses landed in 2.32.11. Older CLIs will fail lat
 ## Lab 2 — Get the code
 
 ```bash
-git clone git@ssh.gitlab.aws.dev:jesrod/partner-central-agent-slack-integration.git
-cd partner-central-agent-slack-integration
+git clone git@github.com:aws-samples/sample-partner-agents.git
+cd "sample-partner-agents/Integration with different tools/Slack"
 ```
 
-If you don't have SSH set up for GitLab, use HTTPS instead:
+If you don't have SSH set up for GitHub, use HTTPS instead:
 ```bash
-git clone https://gitlab.aws.dev/jesrod/partner-central-agent-slack-integration.git
+git clone https://github.com/aws-samples/sample-partner-agents.git
+cd "sample-partner-agents/Integration with different tools/Slack"
 ```
 
 Take 2 minutes to skim the top of `README.md` so you know what's in the repo.
