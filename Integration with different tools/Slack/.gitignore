@@ -1,0 +1,23 @@
+# Dependencies — installed by setup.sh during deploy, never committed
+node_modules/
+
+# macOS metadata
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Build artifacts
+*.zip
+.tmp-*
+.tmp/
+
+# Local environment overrides
+.env
+.env.local
+
+# Logs
+*.log
