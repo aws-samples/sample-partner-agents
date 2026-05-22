@@ -1,9 +1,3 @@
-# Feature Doc — Partner Central Agent Slack Integration
-
-**Status:** Deployed and validated in Sandbox (account 189444294458, us-east-1)
-
----
-
 ## Problem
 
 AWS Partners run their day in Slack. Partner Central lives in a browser tab. The gap between them means:
@@ -106,7 +100,7 @@ Slack ──▶ API Gateway ──▶ Lambda (HTTP ack)
 
 | Item | Value |
 |---|---|
-| Stack name | `slack-partner-central-bot` |
+| Stack name | `slack-pc-bot` (overridable via `STACK_NAME_PREFIX`) |
 | Region | `us-east-1` |
 | Catalog | `Sandbox` |
 | Runtime | Node.js 20.x |
@@ -121,4 +115,4 @@ See `README.md` for partner-facing setup instructions.
 - [Partner Central Agent MCP — Getting Started](https://docs.aws.amazon.com/partner-central/latest/APIReference/mcp-getting-started.html)
 - [Partner Central Agent MCP — Tools Reference](https://docs.aws.amazon.com/partner-central/latest/APIReference/mcp-tools-reference.html)
 - [Slack Bolt for JavaScript](https://slack.dev/bolt-js/concepts)
-- Spec files: `.kiro/specs/slack-partner-central/`
+
