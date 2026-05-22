@@ -1,0 +1,71 @@
+# Slack App Manifest — Partner Central Bot
+#
+# Usage:
+#   1. Go to https://api.slack.com/apps → "Create an App" → "From a manifest"
+#   2. Paste this entire file
+#   3. Replace YOUR_API_GATEWAY_URL below with the CloudFormation output
+#      (something like https://abc123.execute-api.us-east-1.amazonaws.com/prod/slack/events)
+#   4. Click Create
+#   5. Install to your workspace
+
+display_information:
+  name: Partner Central Bot
+  description: Query AWS Partner Central opportunities, funding, and documents from Slack
+  background_color: "#1f2937"
+  long_description: >
+    A Slack bot that connects your workspace to the AWS Partner Central Agent MCP Server.
+    Query opportunities, update them with approval, check funding eligibility, and analyze
+    documents — all from within Slack. Thread-based conversations retain session context
+    for 48 hours.
+
+features:
+  bot_user:
+    display_name: Partner Central Bot
+    always_online: true
+
+  slash_commands:
+    - command: /pc
+      url: YOUR_API_GATEWAY_URL
+      description: Ask the Partner Central agent a natural language question
+      usage_hint: "[your question]"
+      should_escape: false
+
+    - command: /pc-opps
+      url: YOUR_API_GATEWAY_URL
+      description: List your open opportunities
+      should_escape: false
+
+    - command: /pc-session
+      url: YOUR_API_GATEWAY_URL
+      description: Show the current MCP session details for this thread
+      should_escape: false
+
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - commands
+      - app_mentions:read
+      - im:history
+      - im:read
+      - im:write
+
+settings:
+  event_subscriptions:
+    request_url: YOUR_API_GATEWAY_URL
+    bot_events:
+      - app_mention
+      - message.im
+
+  interactivity:
+    is_enabled: true
+    request_url: YOUR_API_GATEWAY_URL
+
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
