@@ -116,6 +116,9 @@ async function loadCrmRecords() {
             card.className = 'deal-card';
             card.onclick = () => selectDeal(record.id, card);
             const safeName = (record.name || '').replace(/'/g, "\'");
+            const nextStepHtml = record.next_step
+                ? `<div class="deal-next-step" style="margin-top: 4px; font-size: 12px; color: #aaa;"><strong>Next Step:</strong> ${escapeHtml(record.next_step)}</div>`
+                : '';
             card.innerHTML = `
                 <div class="deal-name">${record.name}</div>
                 <div class="deal-info">
@@ -123,6 +126,7 @@ async function loadCrmRecords() {
                     &nbsp;•&nbsp; ID: ${record.id}
                     &nbsp;•&nbsp; Close: ${record.close_date ? record.close_date.split('T')[0] : 'N/A'}
                 </div>
+                ${nextStepHtml}
                 <span class="see-details-link" onclick="event.stopPropagation(); showRecordDetails('${record.id}', '${safeName}')">
                     🔍 See details
                 </span>

@@ -50,7 +50,7 @@ class CrmSpec:
     token_label: str = "Bearer Token"
     token_placeholder: str = "Enter your bearer token"
 
-    # If the CRM requires an instance URL (Salesforce, Pipedrive, Dynamics),
+    # If the CRM requires an instance URL (Salesforce, Pipedrive),
     # set these. Leave None for CRMs with a fixed global endpoint (HubSpot).
     instance_url_label: Optional[str] = None
     instance_url_placeholder: Optional[str] = None

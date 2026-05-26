@@ -4,5 +4,6 @@
   "endpoints": {
     "partnercentral_selling": "https://partnercentral-selling.us-east-1.api.aws",
     "partnercentral_mcp": "https://partnercentral-agents.us-east-1.api.aws/mcp"
-  }
+  },
+  "demo_auth_enabled": false
 }

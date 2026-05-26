@@ -19,7 +19,6 @@ class SalesforceAdapter(CrmAdapter):
         token_placeholder="Enter your Salesforce access token",
         instance_url_label="Salesforce Instance URL",
         instance_url_placeholder="https://yourcompany.my.salesforce.com",
-        docs_url="./docs/SALESFORCE_INTEGRATION.md",
     )
 
     def __init__(self, token: str, instance_url: Optional[str] = None):

@@ -20,7 +20,6 @@ class HubSpotAdapter(CrmAdapter):
         # HubSpot has a fixed global endpoint (api.hubapi.com) — no instance URL.
         instance_url_label=None,
         instance_url_placeholder=None,
-        docs_url="./docs/HUBSPOT_INTEGRATION.md",
     )
 
     def __init__(self, token: str, instance_url: Optional[str] = None):
@@ -36,6 +35,7 @@ class HubSpotAdapter(CrmAdapter):
                 "amount": d.amount,
                 "stage": d.stage,
                 "close_date": d.close_date,
+                "next_step": (d.properties or {}).get("hs_next_step", ""),
             }
             for d in deals
         ]

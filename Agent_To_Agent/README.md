@@ -1,6 +1,6 @@
 # Agent-to-Agent: CRM Integration with AWS Partner Central Agent
 
-An AI orchestrator agent that communicates with the **AWS Partner Central Agent** to automate opportunity management, and integrates with CRM systems (HubSpot, Salesforce, Pipedrive, Dynamics 365) to create ACE opportunities from deals.
+An AI orchestrator agent that communicates with the **AWS Partner Central Agent** to automate opportunity management, and integrates with CRM systems (HubSpot, Salesforce, Pipedrive) to create ACE opportunities from deals.
 
 ## Why Agent-to-Agent?
 
@@ -53,7 +53,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐    │   │
 │  │  │  Slack   │  │  Files   │  │ Uploads  │  │   CRM Systems    │    │   │
 │  │  │ Channels │  │ Folders  │  │          │  │ (HubSpot/SFDC/   │    │   │
-│  │  │          │  │          │  │          │  │  Pipedrive/D365) │    │   │
+│  │  │          │  │          │  │          │  │  Pipedrive)      │    │   │
 │  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────────┬─────────┘    │   │
 │  └───────┼─────────────┼─────────────┼─────────────────┼──────────────┘   │
 │          │             │             │                 │                   │
@@ -86,8 +86,8 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 - **Web UI** (Flask): Interactive demo for creating/updating opportunities, chat with the PC Agent
 - **CLI**: Full command-line interface for scripting and automation
 - **REST API** (FastAPI): Headless integration for services and CI/CD
-- **CRM Integrations**: HubSpot, Salesforce, Pipedrive, Dynamics 365
-- **Bi-directional Sync**: Push ACE status back to your CRM
+- **CRM Integrations**: HubSpot, Salesforce, Pipedrive
+- **Bi-directional Sync**: Push ACE status back to your CRM (Demo UI supports HubSpot; CLI supports all CRMs)
 - **Slack Integration**: Read messages from channels as context (optional)
 - **AI-Powered Generation**: Use Claude (via Amazon Bedrock) to create actionable next steps
 - **AWS Marketplace Catalog**: Query offers and products
@@ -442,9 +442,26 @@ Set `catalog` to `"AWS"` for production or `"Sandbox"` for testing.
 | `SALESFORCE_INSTANCE_URL` | Salesforce instance URL | For Salesforce |
 | `PIPEDRIVE_API_TOKEN` | Pipedrive API token | For Pipedrive |
 | `PIPEDRIVE_INSTANCE_URL` | Pipedrive instance URL | For Pipedrive |
-| `DYNAMICS_ACCESS_TOKEN` | Dynamics 365 access token | For Dynamics |
-| `DYNAMICS_INSTANCE_URL` | Dynamics 365 instance URL | For Dynamics |
 | `ANTHROPIC_API_KEY` | Anthropic API key (alternative to Bedrock) | Alternative |
+
+### Optional: Demo UI Authentication
+
+The Demo UI (`demo_ui.py`) includes optional HTTP Basic Auth to password-protect the interface during workshops. It is controlled by the `demo_auth_enabled` field in `config.json`:
+
+- `false` (default in this repo) — no login required
+- `true` — prompts for username/password
+
+Default credentials when enabled:
+- **Username:** `pcagentday`
+- **Password:** `pcagentday`
+
+Override via environment variables:
+
+```bash
+export DEMO_AUTH_ENABLED=true
+export DEMO_AUTH_USERNAME=myuser
+export DEMO_AUTH_PASSWORD=mypass
+```
 
 ### Optional: Slack Integration
 
@@ -522,6 +539,8 @@ python orchestrator_agent.py -o O15081741 -s partner-deals -p "Summarize recent 
 1. **Fetch PC Status**: Gets opportunity review status and stage from Partner Central
 2. **Map Status**: Converts PC status to CRM stage/field values
 3. **Update CRM**: Writes updated fields back to the CRM deal/opportunity
+
+> **Note:** The Demo UI's "Sync from ACE" and "Reset Demo" buttons are available for HubSpot only. Salesforce and Pipedrive sync is available via the CLI (`salesforce-sync`, `pipedrive-sync` commands).
 
 ## HubSpot → ACE Field Mapping
 

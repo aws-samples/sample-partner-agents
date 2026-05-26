@@ -19,7 +19,6 @@ class PipedriveAdapter(CrmAdapter):
         token_placeholder="Enter your Pipedrive API token",
         instance_url_label="Pipedrive Company URL",
         instance_url_placeholder="https://yourcompany.pipedrive.com",
-        docs_url="./docs/PIPEDRIVE_INTEGRATION.md",
     )
 
     def __init__(self, token: str, instance_url: Optional[str] = None):

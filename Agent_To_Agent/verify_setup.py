@@ -103,65 +103,37 @@ def check_bedrock_model_access():
 def check_partner_central_api(catalog: str):
     """Verify Partner Central Selling API access"""
     print_section("3. Partner Central Selling API")
-    
+
     try:
         import boto3
-        import requests
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-        
-        # Use direct HTTP request with SigV4 signing since partnercentral-selling
-        # is not a standard boto3 service
-        endpoint = f"https://partnercentral-selling.us-east-1.api.aws/ListOpportunities"
-        
-        payload = {
-            "Catalog": catalog,
-            "MaxResults": 1
-        }
-        
-        session = boto3.Session()
-        credentials = session.get_credentials()
-        
-        request = AWSRequest(
-            method='POST',
-            url=endpoint,
-            data=json.dumps(payload),
-            headers={
-                'Content-Type': 'application/x-amz-json-1.0',
-                'X-Amz-Target': 'AWSPartnerCentralSelling.ListOpportunities'
-            }
+
+        pc_client = boto3.client(
+            'partnercentral-selling',
+            region_name='us-east-1',
+            endpoint_url='https://partnercentral-selling.us-east-1.api.aws'
         )
-        
-        SigV4Auth(credentials, 'partnercentral-selling', 'us-east-1').add_auth(request)
-        
-        response = requests.post(
-            request.url,
-            data=request.body,
-            headers=dict(request.headers),
-            timeout=30
+
+        response = pc_client.list_opportunities(
+            Catalog=catalog,
+            MaxResults=1
         )
-        
-        if response.status_code == 200:
-            result = response.json()
-            count = len(result.get('OpportunitySummaries', []))
-            print_status(f"Partner Central API ({catalog} catalog)", True)
-            print(f"   └─ Found {count} opportunity(ies) in response")
-            return True
-        else:
-            error_msg = response.text[:200]
-            print_status(f"Partner Central API ({catalog} catalog)", False, f"HTTP {response.status_code}")
-            print(f"   └─ {error_msg}")
-            return False
-        
+
+        count = len(response.get('OpportunitySummaries', []))
+        print_status(f"Partner Central API ({catalog} catalog)", True)
+        print(f"   └─ Found {count} opportunity(ies) in response")
+        return True
+
     except Exception as e:
         error_msg = str(e)
         print_status(f"Partner Central API ({catalog} catalog)", False, error_msg[:200])
-        
+
         if "AccessDeniedException" in error_msg:
-            print("\n   Fix: Attach 'AWSMcpServiceActionsFullAccess' managed policy")
+            print("\n   Fix: Attach 'AWSPartnerCentralSandboxFullAccess' managed policy")
         elif "not registered" in error_msg.lower() or "partner" in error_msg.lower():
             print(f"\n   Fix: Register as a partner in the {catalog} catalog first")
             print("   See README.md for CreatePartner API instructions")
+        elif "Unknown service" in error_msg:
+            print("\n   Fix: Upgrade boto3: pip install --upgrade boto3 botocore (need 1.35.0+)")
         return False
 
 
@@ -189,8 +161,7 @@ def check_partner_central_mcp(catalog: str):
                         "type": "text",
                         "text": "Hello, what can you help me with?"
                     }],
-                    "catalog": catalog,
-                    "stream": False
+                    "catalog": catalog
                 }
             }
         }

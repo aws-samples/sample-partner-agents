@@ -3,12 +3,13 @@
 Demo UI for Agent-to-Agent Workflow
 
 A simple Flask web interface to demonstrate:
-1. CRM (HubSpot/Salesforce/Dynamics 365) → ACE opportunity creation
+1. CRM (HubSpot/Salesforce/Pipedrive) → ACE opportunity creation
 2. Opportunity next steps update via Partner Central MCP
 3. Conversational Q&A about opportunities
 """
 
 import os
+import re
 import json
 import logging
 import boto3
@@ -18,7 +19,21 @@ from functools import wraps
 from flask import Flask, render_template, request, jsonify, Response
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
-from orchestrator_agent import OrchestratorAgent, HubSpotClient, SalesforceClient, DynamicsClient
+from orchestrator_agent import OrchestratorAgent, HubSpotClient, SalesforceClient
+
+
+_OPPORTUNITY_ID_RE = re.compile(r'^O\d{5,}$')
+
+
+def _validate_opportunity_id(opportunity_id: str):
+    """Return an error response tuple if the opportunity_id is malformed, else None."""
+    if not opportunity_id:
+        return jsonify({"error": "opportunity_id is required"}), 400
+    if not _OPPORTUNITY_ID_RE.match(opportunity_id):
+        return jsonify({
+            "error": f"Invalid opportunity_id format: '{opportunity_id}'. Expected format: O followed by digits (e.g., O15081741)."
+        }), 400
+    return None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -34,12 +49,12 @@ def _load_auth_from_config():
         if config_path.exists():
             with open(config_path) as f:
                 return json.load(f).get('demo_auth_enabled')
-    except:
+    except Exception:
         pass
     return None
 
 AUTH_USERNAME = os.environ.get('DEMO_AUTH_USERNAME', 'pcagentday')
-AUTH_PASSWORD = os.environ.get('DEMO_AUTH_PASSWORD', 'pcagentday05072026')
+AUTH_PASSWORD = os.environ.get('DEMO_AUTH_PASSWORD', 'pcagentday')
 
 _env_auth = os.environ.get('DEMO_AUTH_ENABLED')
 _config_auth = _load_auth_from_config()
@@ -270,11 +285,8 @@ def create_opportunity_from_crm():
                 cache_key = f"{crm_type}:{record_id}"
                 crm_to_ace_mapping[cache_key] = ace_id
                 logger.info(f"Cached CRM->ACE mapping: {cache_key} -> {ace_id}")
-        # re-enable this block.
 
-        if result.get("success"):
-            return jsonify(result)
-        return jsonify(result), 200  # Keep 200 so the UI reads `error` field
+        return jsonify(result), 200
 
     except Exception as e:
         logger.error(f"Error creating opportunity: {e}")
@@ -527,9 +539,10 @@ def update_next_steps():
             prompt = data.get('prompt', 'Generate next steps based on the context')
             uploaded = []
         
-        if not opportunity_id:
-            return jsonify({"error": "opportunity_id required"}), 400
-        
+        id_err = _validate_opportunity_id(opportunity_id)
+        if id_err:
+            return id_err
+
         if not notes and not uploaded:
             return jsonify({"error": "Either notes or at least one file is required"}), 400
         
@@ -595,10 +608,13 @@ def submit_next_steps():
         data = request.json
         opportunity_id = data.get('opportunity_id')
         next_steps = data.get('next_steps')
-        
-        if not opportunity_id or not next_steps:
-            return jsonify({"error": "opportunity_id and next_steps required"}), 400
-        
+
+        if not next_steps:
+            return jsonify({"error": "next_steps required"}), 400
+        id_err = _validate_opportunity_id(opportunity_id)
+        if id_err:
+            return id_err
+
         # Enforce 255 character limit (Partner Central API constraint)
         if len(next_steps) > 255:
             next_steps = next_steps[:252] + '...'
@@ -639,7 +655,7 @@ def submit_next_steps():
                                 approval_data = json.loads(tool_content.get('text', '{}'))
                                 tool_use_id = approval_data.get('tool_use_id')
                                 tool_name = approval_data.get('tool_name')
-                            except:
+                            except (json.JSONDecodeError, TypeError):
                                 tool_use_id = tool_content.get('toolUseId')
                                 tool_name = tool_content.get('name')
                             break
@@ -699,12 +715,11 @@ def send_approval():
                         "decision": decision
                     }],
                     "catalog": catalog,
-                    "sessionId": session_id,
-                    "stream": False
+                    "sessionId": session_id
                 }
             }
         }
-        
+
         logger.info(f"Approval payload: {json.dumps(approval_payload, indent=2)}")
         
         session = boto3.Session()
@@ -845,9 +860,12 @@ def chat():
         opportunity_id = data.get('opportunity_id')
         question = data.get('question')
         session_id = data.get('session_id')
-        
-        if not opportunity_id or not question:
-            return jsonify({"error": "opportunity_id and question required"}), 400
+
+        if not question:
+            return jsonify({"error": "question required"}), 400
+        id_err = _validate_opportunity_id(opportunity_id)
+        if id_err:
+            return id_err
         
         agent = OrchestratorAgent()
         config = agent.mcp_client.config
@@ -953,12 +971,11 @@ def chat():
                         "type": "text",
                         "text": full_question
                     }],
-                    "catalog": config.get('catalog', 'Sandbox'),
-                    "stream": False
+                    "catalog": config.get('catalog', 'Sandbox')
                 }
             }
         }
-        
+
         if session_id:
             mcp_payload["params"]["arguments"]["sessionId"] = session_id
         
@@ -1025,9 +1042,9 @@ def chat():
                                     )
                                     if approval_result:
                                         return jsonify(approval_result)
-                            except:
+                            except Exception:
                                 pass
-                    
+
                     # For write operations (update, create, delete), return approval request to frontend
                     for item in inner.get('content', []):
                         if item.get('type') == 'tool_approval_request':
@@ -1056,7 +1073,7 @@ def chat():
             logger.warning(f"Could not parse MCP chat response: {parse_err}")
             try:
                 answer = str(result)[:500]
-            except:
+            except Exception:
                 pass
         
         return jsonify({
@@ -1089,12 +1106,11 @@ def auto_approve_tool(mcp_endpoint, config, credentials, service_name, session_i
                         "decision": decision
                     }],
                     "catalog": config.get('catalog', 'Sandbox'),
-                    "sessionId": session_id,
-                    "stream": False
+                    "sessionId": session_id
                 }
             }
         }
-        
+
         aws_request = AWSRequest(
             method='POST',
             url=mcp_endpoint,
@@ -1129,14 +1145,14 @@ def auto_approve_tool(mcp_endpoint, config, credentials, service_name, session_i
                     elif item_type == 'text':
                         answer = item.get('text', answer)
                         break
-        except:
+        except Exception:
             pass
-        
+
         return {
             "answer": answer,
             "session_id": session_id
         }
-        
+
     except Exception as e:
         logger.error(f"Error in auto-approve: {e}")
         return None
@@ -1215,12 +1231,11 @@ def create_from_notes():
                         "type": "text",
                         "text": notes
                     }],
-                    "catalog": config.get('catalog', 'Sandbox'),
-                    "stream": False
+                    "catalog": config.get('catalog', 'Sandbox')
                 }
             }
         }
-        
+
         if session_id:
             mcp_payload["params"]["arguments"]["sessionId"] = session_id
         
@@ -1410,8 +1425,7 @@ def create_from_notes_approve():
                             "decision": decision
                         }],
                         "catalog": config.get('catalog', 'Sandbox'),
-                        "sessionId": session_id,
-                        "stream": False
+                        "sessionId": session_id
                     }
                 }
             }

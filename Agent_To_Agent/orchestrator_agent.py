@@ -23,31 +23,6 @@ from datetime import datetime, timedelta
 from crm.hubspot_mapper import HubSpotDeal
 from crm.salesforce_mapper import SalesforceOpportunity
 
-# Dynamics 365 integration is optional and lives in local_only/ (not tracked in git).
-# Add local_only/ to sys.path so we can import dynamics_mapper when it's present.
-_LOCAL_ONLY_DIR = Path(__file__).parent / 'local_only'
-if _LOCAL_ONLY_DIR.is_dir() and str(_LOCAL_ONLY_DIR) not in sys.path:
-    sys.path.insert(0, str(_LOCAL_ONLY_DIR))
-
-try:
-    from dynamics_mapper import DynamicsOpportunity
-    DYNAMICS_AVAILABLE = True
-except ImportError:
-    DYNAMICS_AVAILABLE = False
-    # Stub type so the rest of the module can still reference DynamicsOpportunity
-    # in type hints and isinstance checks without NameError.
-    @dataclass
-    class DynamicsOpportunity:  # type: ignore[no-redef]
-        opportunity_id: str = ""
-        name: str = ""
-        estimated_value: float = 0.0
-        stage: str = ""
-        estimated_close_date: str = ""
-        account_name: str = ""
-        contact_name: str = ""
-        contact_email: str = ""
-        description: str = ""
-        properties: Dict = field(default_factory=dict)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -430,7 +405,7 @@ class SalesforceClient:
             error_body = ""
             try:
                 error_body = e.response.json() if e.response else ""
-            except:
+            except (ValueError, AttributeError):
                 error_body = e.response.text if e.response else ""
             return {"error": str(e), "status_code": e.response.status_code if e.response else None, "details": error_body}
         except Exception as e:
@@ -492,8 +467,13 @@ class SalesforceClient:
         contact_last_name = "Contact"
         
         # Try to get OpportunityContactRoles
-        contact_roles_endpoint = f"/services/data/v59.0/query?q=SELECT+ContactId,IsPrimary,Role+FROM+OpportunityContactRole+WHERE+OpportunityId='{opportunity_id}'+ORDER+BY+IsPrimary+DESC+LIMIT+1"
-        contact_roles = self._make_request("GET", contact_roles_endpoint)
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9]{15,18}$', opportunity_id):
+            logger.warning(f"Invalid Salesforce opportunity ID format: {opportunity_id}")
+            contact_roles = {"error": "Invalid opportunity ID format"}
+        else:
+            contact_roles_endpoint = f"/services/data/v59.0/query?q=SELECT+ContactId,IsPrimary,Role+FROM+OpportunityContactRole+WHERE+OpportunityId='{opportunity_id}'+ORDER+BY+IsPrimary+DESC+LIMIT+1"
+            contact_roles = self._make_request("GET", contact_roles_endpoint)
         
         if "error" not in contact_roles and contact_roles.get("records"):
             contact_id = contact_roles["records"][0].get("ContactId")
@@ -546,179 +526,6 @@ class SalesforceClient:
                 amount=float(opp_data.get("Amount", 0) or 0),
                 stage=opp_data.get("StageName", "unknown"),
                 close_date=opp_data.get("CloseDate", ""),
-                account_name="",  # Not fetched in list
-                contact_name="",
-                contact_email="",
-                description="",
-                properties=opp_data
-            ))
-        
-        return opportunities
-
-
-class DynamicsClient:
-    """Client for Microsoft Dynamics 365 CRM API to fetch opportunities"""
-    
-    def __init__(self, bearer_token: str = None, instance_url: str = None):
-        """
-        Initialize Dynamics 365 client.
-        
-        Args:
-            bearer_token: Dynamics 365 access token (or set DYNAMICS_ACCESS_TOKEN env)
-            instance_url: Dynamics 365 instance URL (e.g., https://yourorg.crm.dynamics.com)
-                         Can also be set via DYNAMICS_INSTANCE_URL env var
-        """
-        self.bearer_token = bearer_token or os.environ.get('DYNAMICS_ACCESS_TOKEN')
-        self.instance_url = instance_url or os.environ.get('DYNAMICS_INSTANCE_URL', '')
-        
-        # Remove trailing slash if present
-        if self.instance_url.endswith('/'):
-            self.instance_url = self.instance_url[:-1]
-        
-        if not self.bearer_token:
-            logger.warning("Dynamics 365 access token not configured")
-    
-    def _make_request(self, method: str, endpoint: str, data: Dict = None, params: Dict = None) -> Dict:
-        """Make authenticated request to Dynamics 365 Web API"""
-        import requests
-        
-        if not self.bearer_token:
-            return {"error": "Dynamics 365 access token not configured"}
-        
-        if not self.instance_url:
-            return {"error": "Dynamics 365 instance URL not configured"}
-        
-        url = f"{self.instance_url}/api/data/v9.2{endpoint}"
-        headers = {
-            "Authorization": f"Bearer {self.bearer_token}",
-            "Content-Type": "application/json",
-            "OData-MaxVersion": "4.0",
-            "OData-Version": "4.0",
-            "Accept": "application/json",
-            "Prefer": "odata.include-annotations=*"
-        }
-        
-        try:
-            if method == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=30)
-            elif method == "POST":
-                response = requests.post(url, headers=headers, json=data, timeout=30)
-            elif method == "PATCH":
-                response = requests.patch(url, headers=headers, json=data, timeout=30)
-            else:
-                return {"error": f"Unsupported method: {method}"}
-            
-            response.raise_for_status()
-            return response.json() if response.text else {}
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"Dynamics 365 API error: {e}")
-            error_body = ""
-            try:
-                error_body = e.response.json() if e.response else ""
-            except:
-                error_body = e.response.text if e.response else ""
-            return {"error": str(e), "status_code": e.response.status_code if e.response else None, "details": error_body}
-        except Exception as e:
-            logger.error(f"Dynamics 365 request error: {e}")
-            return {"error": str(e)}
-    
-    def get_contact(self, contact_id: str) -> Dict:
-        """Get contact details from Dynamics 365"""
-        endpoint = f"/contacts({contact_id})"
-        return self._make_request("GET", endpoint)
-    
-    def get_account(self, account_id: str) -> Dict:
-        """Get account details from Dynamics 365"""
-        endpoint = f"/accounts({account_id})"
-        return self._make_request("GET", endpoint)
-    
-    def get_opportunity(self, opportunity_id: str) -> Optional[DynamicsOpportunity]:
-        """Fetch an opportunity by ID with associated account and contact"""
-        # Get opportunity with expanded related entities
-        endpoint = f"/opportunities({opportunity_id})"
-        params = {
-            "$expand": "customerid_account($select=name,industrycode,websiteurl,address1_line1,address1_city,address1_stateorprovince,address1_postalcode,address1_country),parentcontactid($select=firstname,lastname,emailaddress1,telephone1,jobtitle)"
-        }
-        result = self._make_request("GET", endpoint, params=params)
-        
-        if "error" in result:
-            logger.error(f"Failed to fetch opportunity {opportunity_id}: {result['error']}")
-            return None
-        
-        # Extract basic opportunity fields
-        opp_name = result.get("name", "Untitled Opportunity")
-        estimated_value = float(result.get("estimatedvalue", 0) or 0)
-        # Dynamics uses stepname for the current stage in the business process flow
-        stage = result.get("stepname", result.get("salesstagecode@OData.Community.Display.V1.FormattedValue", "unknown"))
-        estimated_close_date = result.get("estimatedclosedate", "")
-        description = result.get("description", "")
-        
-        # Extract account details
-        account = result.get("customerid_account", {}) or {}
-        account_name = account.get("name", "")
-        account_industry = account.get("industrycode@OData.Community.Display.V1.FormattedValue", "")
-        
-        # Extract address from account
-        address = {
-            "address_street": account.get("address1_line1", ""),
-            "address_city": account.get("address1_city", ""),
-            "address_state": account.get("address1_stateorprovince", ""),
-            "address_postalcode": account.get("address1_postalcode", ""),
-            "address_country": account.get("address1_country", "")
-        }
-        
-        # Extract contact details
-        contact = result.get("parentcontactid", {}) or {}
-        contact_first_name = contact.get("firstname", "Unknown")
-        contact_last_name = contact.get("lastname", "Contact")
-        contact_name = f"{contact_first_name} {contact_last_name}".strip()
-        contact_email = contact.get("emailaddress1", "")
-        contact_phone = contact.get("telephone1", "")
-        contact_title = contact.get("jobtitle", "")
-        
-        return DynamicsOpportunity(
-            opportunity_id=opportunity_id,
-            name=opp_name,
-            estimated_value=estimated_value,
-            stage=stage,
-            estimated_close_date=estimated_close_date,
-            account_name=account_name,
-            contact_name=contact_name,
-            contact_email=contact_email,
-            description=description,
-            properties={
-                **result,
-                "contact_first_name": contact_first_name,
-                "contact_last_name": contact_last_name,
-                "contact_phone": contact_phone,
-                "contact_title": contact_title,
-                "account_industry": account_industry,
-                **address
-            }
-        )
-    
-    def list_opportunities(self, limit: int = 10) -> List[DynamicsOpportunity]:
-        """List recent opportunities"""
-        endpoint = "/opportunities"
-        params = {
-            "$select": "opportunityid,name,estimatedvalue,stepname,estimatedclosedate",
-            "$orderby": "createdon desc",
-            "$top": str(limit)
-        }
-        result = self._make_request("GET", endpoint, params=params)
-        
-        if "error" in result:
-            logger.error(f"Failed to list opportunities: {result['error']}")
-            return []
-        
-        opportunities = []
-        for opp_data in result.get("value", []):
-            opportunities.append(DynamicsOpportunity(
-                opportunity_id=opp_data.get("opportunityid", ""),
-                name=opp_data.get("name", "Untitled"),
-                estimated_value=float(opp_data.get("estimatedvalue", 0) or 0),
-                stage=opp_data.get("stepname", "unknown"),
-                estimated_close_date=opp_data.get("estimatedclosedate", ""),
                 account_name="",  # Not fetched in list
                 contact_name="",
                 contact_email="",
@@ -1309,38 +1116,6 @@ class PartnerCentralMCPClient:
                 "error": str(e)
             }
     
-    def create_opportunity_from_dynamics(self, opp: 'DynamicsOpportunity', project_title: str = None) -> Dict:
-        """Create a new ACE opportunity from Dynamics 365 opportunity data using the Dynamics mapper"""
-        try:
-            from dynamics_mapper import DynamicsToPartnerCentralMapper
-            
-            # Use the mapper to convert Dynamics 365 opportunity to Partner Central format
-            mapper = DynamicsToPartnerCentralMapper(catalog=self.config.get('catalog', 'Sandbox'))
-            request_payload = mapper.map_opportunity_to_ace(opp, project_title)
-            
-            logger.info(f"Creating opportunity from Dynamics 365 opportunity {opp.opportunity_id}...")
-            logger.info(f"  PartnerOpportunityIdentifier: {request_payload.get('PartnerOpportunityIdentifier')}")
-            logger.info(f"  TargetCloseDate: {request_payload.get('LifeCycle', {}).get('TargetCloseDate')}")
-            logger.info(f"📤 CREATE OPPORTUNITY REQUEST: {json.dumps(request_payload, separators=(',', ':'))}")
-            
-            response = self.pc_client.create_opportunity(**request_payload)
-            
-            logger.info(f"📥 CREATE OPPORTUNITY RESPONSE: {json.dumps(response, separators=(',', ':'), default=str)}")
-            logger.info(f"Opportunity created successfully: {response.get('Id', 'Unknown')}")
-            
-            return {
-                "success": True,
-                "opportunity_id": response.get("Id"),
-                "response": response
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ CREATE OPPORTUNITY ERROR: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
     def create_opportunity_from_pipedrive(self, deal: 'PipedriveDeal', project_title: str = None) -> Dict:
         """Create a new ACE opportunity from Pipedrive deal data using the Pipedrive mapper"""
         try:
@@ -1412,12 +1187,11 @@ class PartnerCentralMCPClient:
 
 Please update the LifeCycle.NextSteps field with this content."""
                     }],
-                    "catalog": self.config.get('catalog', 'AWS'),
-                    "stream": False
+                    "catalog": self.config.get('catalog', 'AWS')
                 }
             }
         }
-        
+
         # Sign request
         session = boto3.Session()
         credentials = session.get_credentials()
@@ -1502,7 +1276,7 @@ Please update the LifeCycle.NextSteps field with this content."""
                         tool_use_id = approval_data.get('tool_use_id')
                         tool_name = approval_data.get('tool_name')
                         tool_input = approval_data.get('input')
-                    except:
+                    except (json.JSONDecodeError, TypeError, AttributeError):
                         tool_use_id = tool_content.get('toolUseId')
                         tool_name = tool_content.get('name')
                         tool_input = tool_content.get('input')
@@ -1525,7 +1299,7 @@ Please update the LifeCycle.NextSteps field with this content."""
                         print(f"Action: Update NextSteps field")
                         if 'NextSteps' in str(input_data):
                             print(f"Content preview: {str(input_data)[:200]}...")
-                    except:
+                    except (json.JSONDecodeError, TypeError):
                         print(f"Input: {str(tool_input)[:200]}...")
                 print("="*60)
                 
@@ -1562,12 +1336,11 @@ Please update the LifeCycle.NextSteps field with this content."""
                             "decision": decision
                         }],
                         "catalog": self.config.get('catalog', 'AWS'),
-                        "sessionId": session_id,
-                        "stream": False
+                        "sessionId": session_id
                     }
                 }
             }
-            
+
             request = AWSRequest(
                 method='POST',
                 url=mcp_endpoint,
@@ -1606,7 +1379,7 @@ Please update the LifeCycle.NextSteps field with this content."""
                                 if 'error' in update_resp:
                                     error_info = update_resp['error']
                                     update_error = error_info.get('message', str(error_info))
-                            except:
+                            except (json.JSONDecodeError, TypeError, AttributeError):
                                 if 'error' in output.lower():
                                     update_error = output
                     
@@ -1870,9 +1643,8 @@ class MarketplaceCatalogClient:
 class OrchestratorAgent:
     """Main orchestrator that coordinates all components"""
     
-    def __init__(self, config_path: str = None, hubspot_token: str = None, 
+    def __init__(self, config_path: str = None, hubspot_token: str = None,
                  salesforce_token: str = None, salesforce_instance_url: str = None,
-                 dynamics_token: str = None, dynamics_instance_url: str = None,
                  pipedrive_token: str = None, pipedrive_instance_url: str = None):
         self.slack_reader = SlackReader()
         self.file_reader = FileReader()
@@ -1880,7 +1652,6 @@ class OrchestratorAgent:
         self.mcp_client = PartnerCentralMCPClient(config_path)
         self.hubspot_client = HubSpotClient(hubspot_token)
         self.salesforce_client = SalesforceClient(salesforce_token, salesforce_instance_url)
-        self.dynamics_client = DynamicsClient(dynamics_token, dynamics_instance_url)
         self.pipedrive_client = PipedriveClient(pipedrive_token, pipedrive_instance_url)
         self.marketplace_client = MarketplaceCatalogClient(
             region=self.mcp_client.config.get('region', 'us-east-1')
@@ -2110,65 +1881,6 @@ class OrchestratorAgent:
         """List recent Salesforce opportunities"""
         return self.salesforce_client.list_opportunities(limit)
     
-    def create_opportunity_from_dynamics(self, opportunity_id: str, project_title: str = None) -> Dict:
-        """
-        Create an ACE opportunity from a Dynamics 365 opportunity.
-        
-        Args:
-            opportunity_id: Dynamics 365 opportunity GUID
-            project_title: Optional custom title for the ACE opportunity
-            
-        Returns:
-            Dict with success status, ACE opportunity ID, and any errors
-        """
-        try:
-            logger.info(f"Fetching Dynamics 365 opportunity: {opportunity_id}")
-            
-            # Step 1: Fetch opportunity from Dynamics 365
-            opp = self.dynamics_client.get_opportunity(opportunity_id)
-            
-            if not opp:
-                return {
-                    "success": False,
-                    "error": f"Could not fetch Dynamics 365 opportunity: {opportunity_id}"
-                }
-            
-            logger.info(f"Found opportunity: {opp.name} ({opp.account_name})")
-            logger.info(f"  Estimated Value: ${opp.estimated_value:,.2f}")
-            logger.info(f"  Stage: {opp.stage}")
-            logger.info(f"  Contact: {opp.contact_name} ({opp.contact_email})")
-            
-            # Step 2: Create opportunity in Partner Central
-            result = self.mcp_client.create_opportunity_from_dynamics(opp, project_title)
-            
-            if result.get("success"):
-                logger.info(f"✅ ACE Opportunity created: {result.get('opportunity_id')}")
-            else:
-                logger.error(f"❌ Failed to create opportunity: {result.get('error')}")
-            
-            return {
-                "success": result.get("success", False),
-                "dynamics_opportunity": {
-                    "id": opp.opportunity_id,
-                    "name": opp.name,
-                    "account": opp.account_name,
-                    "amount": opp.estimated_value
-                },
-                "ace_opportunity_id": result.get("opportunity_id"),
-                "error": result.get("error")
-            }
-            
-        except Exception as e:
-            logger.error(f"Error creating opportunity from Dynamics 365: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    def list_dynamics_opportunities(self, limit: int = 10) -> List[DynamicsOpportunity]:
-        """List recent Dynamics 365 opportunities"""
-        return self.dynamics_client.list_opportunities(limit)
-
     def create_opportunity_from_pipedrive(self, deal_id: str, project_title: str = None) -> Dict:
         """
         Create an ACE opportunity from a Pipedrive deal.
@@ -2514,15 +2226,21 @@ def main():
     mp_describe_parser = subparsers.add_parser('marketplace-describe', help='Describe a specific AWS Marketplace entity')
     mp_describe_parser.add_argument('--entity-id', '-e', required=True, help='Entity ID to describe (offer ID, product ID, etc.)')
     mp_describe_parser.add_argument('--config', '-c', help='Path to config.json')
-    
+
+    # Ask command — send a question to the Partner Central Agent
+    ask_parser = subparsers.add_parser('ask', help='Ask the Partner Central Agent a question')
+    ask_parser.add_argument('question', nargs='?', help='Question to ask (or use --prompt)')
+    ask_parser.add_argument('--prompt', '-p', help='Question to ask the Partner Central Agent')
+    ask_parser.add_argument('--opportunity-id', '-o', help='Opportunity ID for context (optional)')
+    ask_parser.add_argument('--config', '-c', help='Path to config.json')
+
     # Legacy support: if the first CLI argument starts with '-' (a flag like
     # --opportunity-id), it's not a subcommand — go straight to legacy mode.
     # This lets users run:
     #   python orchestrator_agent.py --opportunity-id O123 --upload file.txt
     # without the explicit 'update' subcommand.
-    import sys as _sys
-    
-    if len(_sys.argv) > 1 and _sys.argv[1].startswith('-'):
+        
+    if len(sys.argv) > 1 and sys.argv[1].startswith('-'):
         # Legacy mode: treat as 'update' command
         legacy_parser = argparse.ArgumentParser(description='Agent-to-Agent Next Steps Generator')
         legacy_parser.add_argument('--opportunity-id', '-o', required=True, help='Partner Central Opportunity ID')
@@ -2542,7 +2260,7 @@ def main():
         args = parser.parse_args()
         if args.command is None:
             parser.print_help()
-            _sys.exit(1)
+            sys.exit(1)
     
     if args.command == 'update':
         agent = OrchestratorAgent(config_path=args.config)
@@ -2575,7 +2293,7 @@ def main():
                         print("⏳ Partner Central Agent is waiting for human approval to update the opportunity.")
                     elif status == 'complete':
                         print("✅ Opportunity update completed.")
-            except:
+            except Exception:
                 pass
             
             if 'error' in result.mcp_response:
@@ -2925,6 +2643,181 @@ def main():
         
         return 0
     
+    elif args.command == 'ask':
+        question = args.question or args.prompt
+        if not question:
+            print("❌ Error: Provide a question as an argument or via --prompt.")
+            return 1
+
+        agent = OrchestratorAgent(config_path=args.config)
+        config = agent.mcp_client.config
+        mcp_endpoint = config['endpoints']['partnercentral_mcp']
+
+        if args.opportunity_id:
+            question = f"Regarding opportunity {args.opportunity_id}: {question}"
+
+        import boto3
+        import requests
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        mcp_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "sendMessage",
+                "arguments": {
+                    "content": [{
+                        "type": "text",
+                        "text": question
+                    }],
+                    "catalog": config.get('catalog', 'Sandbox')
+                }
+            }
+        }
+
+        session = boto3.Session()
+        credentials = session.get_credentials()
+
+        request = AWSRequest(
+            method='POST',
+            url=mcp_endpoint,
+            data=json.dumps(mcp_payload),
+            headers={'Content-Type': 'application/json'}
+        )
+
+        service_name = 'partnercentral-agents' if 'gamma' in mcp_endpoint else 'partnercentral-agents-mcp'
+        SigV4Auth(credentials, service_name, config.get('region', 'us-east-1')).add_auth(request)
+
+        print(f"\n💬 Asking Partner Central Agent: {question}\n")
+
+        try:
+            response = requests.post(
+                request.url,
+                data=request.body,
+                headers=dict(request.headers),
+                timeout=120
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            content = result.get('result', {}).get('content', [])
+            if content and content[0].get('type') == 'text':
+                inner = json.loads(content[0].get('text', '{}'))
+                status = inner.get('status', '')
+                session_id = inner.get('sessionId', '')
+
+                # Extract agent response
+                answer = None
+                for item in reversed(inner.get('content', [])):
+                    item_type = item.get('type', '')
+                    if item_type == 'ASSISTANT_RESPONSE':
+                        item_content = item.get('content', {})
+                        if isinstance(item_content, dict) and 'text' in item_content:
+                            answer = item_content['text']
+                            break
+                    elif item_type == 'text':
+                        answer = item.get('text')
+                        break
+
+                if status == 'requires_approval':
+                    # Auto-approve read operations, prompt for writes
+                    for item in inner.get('content', []):
+                        if item.get('type') == 'tool_approval_request':
+                            tool_content = item.get('content', {})
+                            try:
+                                approval_data = json.loads(tool_content.get('text', '{}'))
+                                tool_name = approval_data.get('tool_name', '')
+                                tool_use_id = approval_data.get('tool_use_id')
+
+                                is_read = any(k in tool_name.lower() for k in ('get', 'list', 'read', 'describe'))
+
+                                if is_read:
+                                    decision = 'approve'
+                                    print(f"🔄 Auto-approving read operation: {tool_name}")
+                                else:
+                                    print(f"\n🔐 APPROVAL REQUIRED")
+                                    print(f"   Tool: {tool_name}")
+                                    while True:
+                                        choice = input("\nApprove this action? [y/n]: ").strip().lower()
+                                        if choice in ('y', 'yes'):
+                                            decision = 'approve'
+                                            break
+                                        elif choice in ('n', 'no'):
+                                            decision = 'reject'
+                                            break
+                                        print("Please enter 'y' or 'n'")
+
+                                # Send approval
+                                approval_payload = {
+                                    "jsonrpc": "2.0",
+                                    "id": 2,
+                                    "method": "tools/call",
+                                    "params": {
+                                        "name": "sendMessage",
+                                        "arguments": {
+                                            "content": [{
+                                                "type": "tool_approval_response",
+                                                "toolUseId": tool_use_id,
+                                                "decision": decision
+                                            }],
+                                            "catalog": config.get('catalog', 'Sandbox'),
+                                            "sessionId": session_id
+                                        }
+                                    }
+                                }
+
+                                approval_request = AWSRequest(
+                                    method='POST',
+                                    url=mcp_endpoint,
+                                    data=json.dumps(approval_payload),
+                                    headers={'Content-Type': 'application/json'}
+                                )
+                                SigV4Auth(credentials, service_name, config.get('region', 'us-east-1')).add_auth(approval_request)
+
+                                approval_response = requests.post(
+                                    approval_request.url,
+                                    data=approval_request.body,
+                                    headers=dict(approval_request.headers),
+                                    timeout=120
+                                )
+                                approval_response.raise_for_status()
+                                approval_result = approval_response.json()
+
+                                # Extract final answer
+                                final_content = approval_result.get('result', {}).get('content', [])
+                                if final_content and final_content[0].get('type') == 'text':
+                                    final_inner = json.loads(final_content[0].get('text', '{}'))
+                                    for fi in reversed(final_inner.get('content', [])):
+                                        fi_type = fi.get('type', '')
+                                        if fi_type == 'ASSISTANT_RESPONSE':
+                                            fi_content = fi.get('content', {})
+                                            if isinstance(fi_content, dict) and 'text' in fi_content:
+                                                answer = fi_content['text']
+                                                break
+                                        elif fi_type == 'text':
+                                            answer = fi.get('text')
+                                            break
+                            except Exception as approval_err:
+                                logger.warning(f"Error in approval flow: {approval_err}")
+                            break
+
+                if answer:
+                    print("=" * 60)
+                    print("PARTNER CENTRAL AGENT RESPONSE")
+                    print("=" * 60)
+                    print(f"\n{answer}\n")
+                else:
+                    print("No response from the agent.")
+
+            return 0
+
+        except Exception as e:
+            logger.error(f"Error asking agent: {e}")
+            print(f"\n❌ Error: {e}")
+            return 1
+
     else:
         parser.print_help()
         return 1
