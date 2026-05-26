@@ -175,13 +175,13 @@ The Partner Central API the bot uses landed in 2.32.11. Older CLIs will fail lat
 
 ```bash
 git clone git@github.com:aws-samples/sample-partner-agents.git
-cd "sample-partner-agents/Integration with different tools/Slack"
+cd "sample-partner-agents/Integration_with_different_tools/Slack"
 ```
 
 If you don't have SSH set up for GitHub, use HTTPS instead:
 ```bash
 git clone https://github.com/aws-samples/sample-partner-agents.git
-cd "sample-partner-agents/Integration with different tools/Slack"
+cd "sample-partner-agents/Integration_with_different_tools/Slack"
 ```
 
 Take 2 minutes to skim the top of `README.md` so you know what's in the repo.
