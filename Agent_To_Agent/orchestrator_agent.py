@@ -1051,7 +1051,266 @@ class PartnerCentralMCPClient:
         except Exception as e:
             logger.error(f"Error listing solutions: {e}")
             return []
-    
+
+    def list_opportunities(self, max_results: int = 50, since_days: int = None) -> List[Dict]:
+        """List opportunities for the current partner via Partner Central Selling API.
+
+        Args:
+            max_results: Max opportunities to return per page (default 50, max 100).
+            since_days: If set, only include opportunities last modified in this
+                many days. Helpful for the AO opportunity finder.
+        """
+        try:
+            params = {
+                'Catalog': self.config.get('catalog', 'AWS'),
+                'MaxResults': min(max_results, 100),
+            }
+            if since_days:
+                from datetime import datetime, timedelta, timezone
+                since = datetime.now(timezone.utc) - timedelta(days=since_days)
+                params['LastModifiedDate'] = {
+                    'AfterLastModifiedDate': since.isoformat(),
+                }
+            opportunities = []
+            next_token = None
+            while True:
+                if next_token:
+                    params['NextToken'] = next_token
+                response = self.pc_client.list_opportunities(**params)
+                opportunities.extend(response.get('OpportunitySummaries', []))
+                next_token = response.get('NextToken')
+                if not next_token:
+                    break
+                if len(opportunities) >= 500:
+                    logger.warning('Stopping ListOpportunities pagination at 500 results')
+                    break
+            logger.info(f'ListOpportunities returned {len(opportunities)} opportunity summaries')
+            return opportunities
+        except Exception as e:
+            logger.error(f'Error listing opportunities: {e}')
+            return []
+
+    def get_aws_opportunity_summary(self, opportunity_id: str) -> Dict:
+        """Fetch the AWS-side summary of an opportunity (returns Origin, InvolvementType, etc.)."""
+        try:
+            response = self.pc_client.get_aws_opportunity_summary(
+                Catalog=self.config.get('catalog', 'AWS'),
+                RelatedOpportunityIdentifier=opportunity_id,
+            )
+            return response
+        except Exception as e:
+            logger.warning(f'Error fetching AwsOpportunitySummary for {opportunity_id}: {e}')
+            return {}
+
+    def find_ao_opportunities(self, since_days: int = 180, limit: int = 100) -> List[Dict]:
+        """Find AWS-originated (Origin = 'AWS Referral') opportunities.
+
+        The Partner Central Agent's pipeline tools cannot reliably filter by
+        Origin = 'AWS Referral'. This orchestrator method chains multiple PC
+        Selling APIs to do it ourselves: ListOpportunities -> GetAwsOpportunitySummary
+        for each -> filter on Origin -> GetOpportunity for region details.
+
+        Args:
+            since_days: Look back this many days (default 180).
+            limit: Max opportunities to scan (default 100, hard cap to keep
+                latency reasonable in the chat UI).
+
+        Returns:
+            List of dicts with keys: id, customer_name, stage, target_close_date,
+            origin, involvement_type, region, country_code, last_modified_date.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        summaries = self.list_opportunities(max_results=100, since_days=since_days)
+        if not summaries:
+            return []
+        if len(summaries) > limit:
+            logger.info(f'Truncating scan from {len(summaries)} to {limit} opportunities')
+            summaries = summaries[:limit]
+
+        def _check_one(opp_summary):
+            opp_id = opp_summary.get('Id')
+            if not opp_id:
+                return None
+            aws_summary = self.get_aws_opportunity_summary(opp_id)
+            if (aws_summary.get('Origin') or '').strip().lower() != 'aws referral':
+                return None
+            full = self.get_opportunity(opp_id) or {}
+            project = full.get('Project', {}) or {}
+            customer = full.get('Customer', {}) or {}
+            account = customer.get('Account', {}) or {}
+            return {
+                'id': opp_id,
+                'customer_name': account.get('CompanyName', 'Unknown'),
+                'country_code': account.get('Address', {}).get('CountryCode', ''),
+                'stage': (full.get('LifeCycle', {}) or {}).get('Stage', ''),
+                'target_close_date': (full.get('LifeCycle', {}) or {}).get('TargetCloseDate', ''),
+                'origin': aws_summary.get('Origin'),
+                'involvement_type': aws_summary.get('InvolvementType'),
+                'region': (
+                    aws_summary.get('Region')
+                    or project.get('Region')
+                    or account.get('Address', {}).get('CountryCode', '')
+                    or ''
+                ),
+                'last_modified_date': opp_summary.get('LastModifiedDate', ''),
+            }
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = [r for r in ex.map(_check_one, summaries) if r]
+
+        def _sort_key(item):
+            v = item.get('last_modified_date') or ''
+            if hasattr(v, 'isoformat'):
+                return v.isoformat()
+            return str(v)
+        results.sort(key=_sort_key, reverse=True)
+        logger.info(f'find_ao_opportunities: {len(results)} AO opportunity(ies) found')
+        return results
+
+    def list_engagement_invitations(self, since_days: int = 30, max_results: int = 50,
+                                    participant_type: str = 'RECEIVER') -> List[Dict]:
+        """List engagement invitations received from AWS, optionally filtered by date.
+
+        Args:
+            since_days: Only include invitations dated within the last N days.
+                Set to None to disable the date filter.
+            max_results: Max items per page (1-50, hard cap).
+            participant_type: 'RECEIVER' for invitations sent TO this account,
+                'SENDER' for invitations sent BY this account.
+
+        Returns:
+            List of EngagementInvitationSummary dicts (Id, EngagementTitle,
+            Status, InvitationDate, SenderAwsAccountId, etc.).
+        """
+        try:
+            params = {
+                'Catalog': self.config.get('catalog', 'AWS'),
+                'MaxResults': min(max_results, 50),
+                'ParticipantType': participant_type,
+            }
+            invitations = []
+            next_token = None
+            while True:
+                if next_token:
+                    params['NextToken'] = next_token
+                response = self.pc_client.list_engagement_invitations(**params)
+                invitations.extend(response.get('EngagementInvitationSummaries', []))
+                next_token = response.get('NextToken')
+                if not next_token:
+                    break
+                if len(invitations) >= 200:
+                    logger.warning('Stopping ListEngagementInvitations pagination at 200 results')
+                    break
+
+            if since_days:
+                from datetime import datetime, timedelta, timezone
+                cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+
+                def _on_or_after_cutoff(inv):
+                    inv_date = inv.get('InvitationDate')
+                    if not inv_date:
+                        return False
+                    if hasattr(inv_date, 'tzinfo'):
+                        return inv_date >= cutoff
+                    try:
+                        from datetime import datetime as _dt
+                        parsed = _dt.fromisoformat(str(inv_date).replace('Z', '+00:00'))
+                        return parsed >= cutoff
+                    except Exception:
+                        return True
+
+                invitations = [i for i in invitations if _on_or_after_cutoff(i)]
+
+            logger.info(f'list_engagement_invitations: {len(invitations)} invitation(s) returned')
+            return invitations
+        except Exception as e:
+            logger.error(f'Error listing engagement invitations: {e}')
+            return []
+
+    def get_engagement_invitation(self, invitation_id: str) -> Dict:
+        """Fetch the full payload of an engagement invitation including customer details."""
+        try:
+            response = self.pc_client.get_engagement_invitation(
+                Catalog=self.config.get('catalog', 'AWS'),
+                Identifier=invitation_id,
+            )
+            return response
+        except Exception as e:
+            logger.warning(f'Error fetching engagement invitation {invitation_id}: {e}')
+            return {}
+
+    def find_engagement_invitations_by_country(self, country_code=None,
+                                               since_days: int = 30,
+                                               limit: int = 50) -> List[Dict]:
+        """Find engagement invitations from AWS, optionally filtered by customer country.
+
+        The Partner Central Agent has no tool for engagement invitations. The
+        custom orchestrator chains ListEngagementInvitations with date filter
+        + GetEngagementInvitation per item to read the customer country code,
+        then filters locally to deliver country-scoped pipeline results.
+
+        Args:
+            country_code: Either a single ISO country code (e.g., 'US'), a list
+                of codes (e.g., ['DE', 'FR', 'IT']) for regional groupings, or
+                None to return all.
+            since_days: Only invitations from the last N days (default 30).
+            limit: Max invitations to scan (default 50).
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        summaries = self.list_engagement_invitations(
+            since_days=since_days, max_results=50, participant_type='RECEIVER'
+        )
+        if not summaries:
+            return []
+        if len(summaries) > limit:
+            logger.info(f'Truncating engagement invitation scan from {len(summaries)} to {limit}')
+            summaries = summaries[:limit]
+
+        if isinstance(country_code, str):
+            target_countries = {country_code.strip().upper()} if country_code.strip() else None
+        elif isinstance(country_code, (list, tuple, set)):
+            target_countries = {c.strip().upper() for c in country_code if c and c.strip()} or None
+        else:
+            target_countries = None
+
+        def _enrich_one(summary):
+            inv_id = summary.get('Id')
+            if not inv_id:
+                return None
+            detail = self.get_engagement_invitation(inv_id)
+            payload = (detail.get('Payload') or {}).get('OpportunityInvitation') or {}
+            customer = payload.get('Customer') or {}
+            project = payload.get('Project') or {}
+            inv_country = (customer.get('CountryCode') or '').strip().upper()
+            if target_countries and inv_country not in target_countries:
+                return None
+            return {
+                'id': inv_id,
+                'engagement_title': summary.get('EngagementTitle', ''),
+                'status': summary.get('Status', ''),
+                'invitation_date': summary.get('InvitationDate'),
+                'expiration_date': summary.get('ExpirationDate'),
+                'sender_aws_account_id': summary.get('SenderAwsAccountId', ''),
+                'sender_company_name': summary.get('SenderCompanyName', ''),
+                'customer_company': customer.get('CompanyName', ''),
+                'customer_country': inv_country,
+                'customer_industry': customer.get('Industry', ''),
+                'project_title': project.get('Title', ''),
+                'project_business_problem': (project.get('BusinessProblem') or '')[:120],
+            }
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = [r for r in ex.map(_enrich_one, summaries) if r]
+
+        def _sort_key(item):
+            v = item.get('invitation_date') or ''
+            if hasattr(v, 'isoformat'):
+                return v.isoformat()
+            return str(v)
+        results.sort(key=_sort_key, reverse=True)
+        logger.info(f'find_engagement_invitations_by_country: {len(results)} invitation(s) match')
+        return results
+
     def create_opportunity(self, deal: 'HubSpotDeal', project_title: str = None) -> Dict:
         """Create a new ACE opportunity from HubSpot deal data using the HubSpot mapper"""
         try:
@@ -1155,7 +1414,7 @@ class PartnerCentralMCPClient:
         auto_approve: bool = False,
     ) -> Dict:
         """Update opportunity's NextSteps field via MCP.
-        
+
         Args:
             opportunity_id: ACE opportunity id (e.g., O15081741)
             next_steps: text to write into LifeCycle.NextSteps
@@ -1164,6 +1423,10 @@ class PartnerCentralMCPClient:
                 without prompting. Use for non-interactive callers (REST
                 API, scheduled jobs). Has no effect if `interactive` is True.
         """
+        if len(next_steps) > 255:
+            next_steps = next_steps[:252] + '...'
+            logger.warning("Next steps truncated to 255 characters (Partner Central limit)")
+
         import boto3
         import requests
         from botocore.auth import SigV4Auth
@@ -2140,6 +2403,32 @@ class OrchestratorAgent:
     def describe_marketplace_entity(self, entity_id: str) -> Dict:
         """Describe a specific entity (offer, product, etc.) from AWS Marketplace Catalog."""
         return self.marketplace_client.describe_entity(entity_id)
+
+    def find_ao_opportunities(self, since_days: int = 180, limit: int = 100) -> List[Dict]:
+        """Find AWS-originated opportunities (Origin = 'AWS Referral').
+
+        Demonstrates the value of a custom orchestrator: the Partner Central
+        Agent cannot reliably filter the pipeline by Origin = 'AWS Referral',
+        but the orchestrator can chain ListOpportunities + GetAwsOpportunitySummary
+        + GetOpportunity to do it. See PartnerCentralMCPClient.find_ao_opportunities
+        for the full implementation.
+        """
+        return self.mcp_client.find_ao_opportunities(since_days=since_days, limit=limit)
+
+    def find_engagement_invitations_by_country(self, country_code=None,
+                                               since_days: int = 30,
+                                               limit: int = 50) -> List[Dict]:
+        """Find engagement invitations from AWS, optionally filtered by customer country.
+
+        Demonstrates another custom-orchestrator value-prop: the Partner Central
+        Agent has no tool for engagement invitations. The orchestrator chains
+        ListEngagementInvitations (with date filter) + GetEngagementInvitation
+        (per item) to read the customer country and surfaces invitations from
+        AWS scoped to a region/country.
+        """
+        return self.mcp_client.find_engagement_invitations_by_country(
+            country_code=country_code, since_days=since_days, limit=limit
+        )
 
 
 def main():
