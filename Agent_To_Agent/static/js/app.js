@@ -1316,11 +1316,6 @@ async function sendChatMessage() {
     const input = document.getElementById('chat-input');
     const question = input.value.trim();
     
-    if (!oppId) {
-        alert('Please enter an Opportunity ID first');
-        return;
-    }
-    
     if (!question) {
         return;
     }

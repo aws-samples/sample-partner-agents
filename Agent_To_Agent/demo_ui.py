@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# In-memory tracker of the last chat intent per session. Lets follow-up
+# questions like "how about Europe?" route to the same handler as the
+# previous turn (e.g., engagement invitations) without restating the full
+# question. Cleared when the session ends or the server restarts.
+_last_chat_intent_by_session = {}
+
 # --- Basic Auth (password-protect the demo for workshop use) ----------------
 # Priority: env var > config.json > default (true)
 def _load_auth_from_config():
@@ -863,16 +869,253 @@ def chat():
 
         if not question:
             return jsonify({"error": "question required"}), 400
-        id_err = _validate_opportunity_id(opportunity_id)
-        if id_err:
-            return id_err
+        # opportunity_id is optional for pipeline-level questions; only validate format if provided
+        if opportunity_id:
+            id_err = _validate_opportunity_id(opportunity_id)
+            if id_err:
+                return id_err
         
         agent = OrchestratorAgent()
         config = agent.mcp_client.config
-        
+
+        q_lower = question.lower()
+        import re as _re
+
+        # Intent: list engagement invitations from AWS (optionally filtered by
+        # country). The Partner Central Agent has no tool for invitations; the
+        # custom orchestrator chains ListEngagementInvitations (date filter)
+        # + GetEngagementInvitation (per item) to read customer country, then
+        # filters locally. Demonstrates another value prop of the custom
+        # orchestrator vs. the off-the-shelf PC Agent.
+        invitation_triggers = [
+            'engagement invitation', 'engagement invitations',
+            'opportunities shared by aws', 'opportunities shared from aws',
+            'invitations from aws', 'aws shared opportunities',
+            'opportunities aws shared', 'shared by aws',
+        ]
+        # Check if the previous turn in this session was an engagement-invitation
+        # query. If so, treat short follow-ups like "how about Europe?" or
+        # "what about LATAM last 6 months?" as continuations of that intent.
+        tracker_key = session_id or '_no_mcp_session'
+        prev_intent = _last_chat_intent_by_session.get(tracker_key)
+        invitation_followup_phrases = (
+            'how about ', 'what about ', 'and ', 'in ', 'for ', 'show me ',
+            'show ', 'list ',
+        )
+        is_invitation_followup = (
+            prev_intent == 'engagement_invitations'
+            and any(p in q_lower or q_lower.startswith(p) for p in invitation_followup_phrases)
+        )
+
+        if any(t in q_lower for t in invitation_triggers) or is_invitation_followup:
+            # Named-region detection. Maps a region/country phrase to either
+            # a single ISO code or a list of ISO codes for regional groupings.
+            # AWS standard geos: NAMER, EMEA, APAC, LATAM.
+            region_map = {
+                'us region': 'US', 'us country': 'US', 'united states': 'US',
+                'uk region': 'GB', 'united kingdom': 'GB', 'uk country': 'GB',
+                'india': 'IN', 'germany': 'DE', 'japan': 'JP', 'australia': 'AU',
+                'canada': 'CA', 'france': 'FR', 'brazil': 'BR',
+                'namer': ['CA', 'MX', 'US'],
+                'north america': ['CA', 'MX', 'US'],
+                'emea': ['AT', 'BE', 'BG', 'CH', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GB', 'GR', 'HR', 'HU', 'IE', 'IS', 'IT', 'LI', 'LT', 'LU', 'LV', 'MT', 'NL', 'NO', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK', 'UK', 'AE', 'BH', 'EG', 'IL', 'JO', 'KW', 'LB', 'MA', 'OM', 'QA', 'SA', 'TN', 'TR', 'ZA', 'NG', 'KE', 'GH'],
+                'europe region': ['AT', 'BE', 'BG', 'CH', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GB', 'GR', 'HR', 'HU', 'IE', 'IS', 'IT', 'LI', 'LT', 'LU', 'LV', 'MT', 'NL', 'NO', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK', 'UK'],
+                'europe': ['AT', 'BE', 'BG', 'CH', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GB', 'GR', 'HR', 'HU', 'IE', 'IS', 'IT', 'LI', 'LT', 'LU', 'LV', 'MT', 'NL', 'NO', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK', 'UK'],
+                'european': ['AT', 'BE', 'BG', 'CH', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GB', 'GR', 'HR', 'HU', 'IE', 'IS', 'IT', 'LI', 'LT', 'LU', 'LV', 'MT', 'NL', 'NO', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK', 'UK'],
+                'apac': ['AU', 'BD', 'CN', 'HK', 'ID', 'IN', 'JP', 'KR', 'MY', 'NZ', 'PH', 'SG', 'TH', 'TW', 'VN'],
+                'asia pacific': ['AU', 'BD', 'CN', 'HK', 'ID', 'IN', 'JP', 'KR', 'MY', 'NZ', 'PH', 'SG', 'TH', 'TW', 'VN'],
+                'asia': ['BD', 'CN', 'HK', 'ID', 'IN', 'JP', 'KR', 'MY', 'PH', 'SG', 'TH', 'TW', 'VN'],
+                'latam': ['AR', 'BR', 'CL', 'CO', 'MX', 'PE'],
+                'latin america': ['AR', 'BR', 'CL', 'CO', 'MX', 'PE'],
+                'middle east': ['AE', 'BH', 'EG', 'IL', 'JO', 'KW', 'OM', 'QA', 'SA'],
+                'mena': ['AE', 'BH', 'DZ', 'EG', 'IL', 'JO', 'KW', 'LB', 'MA', 'OM', 'QA', 'SA', 'TN'],
+                'africa': ['EG', 'GH', 'KE', 'MA', 'NG', 'ZA'],
+            }
+            country_code = None
+            matched_region_label = None
+            for kw, code in region_map.items():
+                if kw in q_lower:
+                    country_code = code
+                    matched_region_label = kw
+                    break
+            # Fallback: look for explicit ISO code patterns like "country=US",
+            # "country code US", or "in US region/country" (must be preceded by
+            # a word like 'region/country/customer' to avoid matching parts of
+            # other English words such as 'past').
+            if not country_code:
+                # Two separate, unambiguous regexes (no overlapping \s* groups,
+                # bounded whitespace) to avoid ReDoS while still catching
+                # "country US", "country code: US", "country=US", "customer in US".
+                country_match = _re.search(
+                    r'\bcountry(?:\s{1,3}code)?\s{0,3}[=:]?\s{0,3}([a-z]{2})\b',
+                    q_lower,
+                )
+                if not country_match:
+                    country_match = _re.search(
+                        r'\bcustomer\s{1,3}in\s{1,3}([a-z]{2})\b',
+                        q_lower,
+                    )
+                if country_match:
+                    country_code = country_match.group(1).upper()
+
+            since_days_match = _re.search(r'(?:last|past)\s+(\d+)\s+(day|month)s?', q_lower)
+            since_days = 30
+            if since_days_match:
+                n = int(since_days_match.group(1))
+                since_days = n if since_days_match.group(2) == 'day' else n * 30
+            elif 'last month' in q_lower or 'past month' in q_lower:
+                since_days = 30
+            elif 'last week' in q_lower or 'past week' in q_lower:
+                since_days = 7
+            elif 'last 6 months' in q_lower or 'last six months' in q_lower or 'past 6 months' in q_lower:
+                since_days = 180
+            elif 'last year' in q_lower or 'past year' in q_lower:
+                since_days = 365
+
+            try:
+                invitations = agent.find_engagement_invitations_by_country(
+                    country_code=country_code, since_days=since_days, limit=50
+                )
+                country_label = ''
+                if isinstance(country_code, str) and country_code:
+                    country_label = f' for {country_code}'
+                elif isinstance(country_code, list) and country_code:
+                    if matched_region_label:
+                        country_label = f' for {matched_region_label.title()} ({len(country_code)} countries)'
+                    else:
+                        country_label = f' for region ({len(country_code)} countries)'
+                if not invitations:
+                    answer = (
+                        f"No engagement invitations from AWS found{country_label} in the last {since_days} days.\n\n"
+                        f"💡 Note: the Partner Central Agent has no tool for engagement invitations. "
+                        f"This orchestrator chained `ListEngagementInvitations` (date-filtered) and "
+                        f"`GetEngagementInvitation` (per item, to read customer country) to surface them."
+                    )
+                else:
+                    lines = [f"### Engagement invitations from AWS{country_label} (last {since_days} days)\n"]
+                    lines.append(f"Found **{len(invitations)}** invitation{'s' if len(invitations) != 1 else ''}:\n")
+                    lines.append("| Invitation ID | Title | Customer | Country | Industry | Status | Invitation Date |")
+                    lines.append("|---|---|---|---|---|---|---|")
+                    for i in invitations[:25]:
+                        inv_date = i.get('invitation_date') or ''
+                        if hasattr(inv_date, 'strftime'):
+                            inv_date = inv_date.strftime('%Y-%m-%d')
+                        else:
+                            inv_date = str(inv_date)[:10]
+                        lines.append(
+                            f"| `{i.get('id')}` | {i.get('engagement_title', '')[:25]} | "
+                            f"{i.get('customer_company', '')[:20]} | {i.get('customer_country', '') or '—'} | "
+                            f"{i.get('customer_industry', '')[:18]} | {i.get('status', '')} | "
+                            f"{inv_date} |"
+                        )
+                    if country_code:
+                        country_filter_str = (
+                            country_code if isinstance(country_code, str)
+                            else ', '.join(country_code)
+                        )
+                        lines.append(
+                            f"\n💡 *The Partner Central Agent has no tool for engagement invitations. "
+                            f"The orchestrator called `ListEngagementInvitations` with the date filter, then "
+                            f"`GetEngagementInvitation` for each summary to read the customer's country code, "
+                            f"and filtered locally to country in [`{country_filter_str}`].*"
+                        )
+                    else:
+                        lines.append(
+                            f"\n💡 *The Partner Central Agent has no tool for engagement invitations. "
+                            f"The orchestrator called `ListEngagementInvitations` with the date filter, then "
+                            f"`GetEngagementInvitation` for each summary to read the full payload.*"
+                        )
+                    answer = '\n'.join(lines)
+                # Track the last intent so follow-ups like "how about Europe?"
+                # route to the same handler. We use the existing session_id
+                # when present, and fall back to a per-process key.
+                tracker_key = session_id or '_no_mcp_session'
+                _last_chat_intent_by_session[tracker_key] = 'engagement_invitations'
+                return jsonify({
+                    "answer": answer,
+                    "session_id": session_id,
+                })
+            except Exception as e:
+                logger.error(f"Error finding engagement invitations: {e}", exc_info=True)
+                return jsonify({
+                    "answer": "❌ Error finding engagement invitations. Please check the server logs for details.",
+                    "session_id": session_id,
+                })
+
+        # Intent: find AWS-originated (AO) opportunities. The Partner Central
+        # Agent cannot reliably filter by Origin = 'AWS Referral'; the custom
+        # orchestrator chains ListOpportunities + GetAwsOpportunitySummary +
+        # GetOpportunity to surface them. Demonstrates a key value prop of the
+        # custom orchestrator vs. the off-the-shelf PC Agent.
+        ao_triggers = [
+            'aws originated opportunit', 'aws-originated opportunit',
+            'ao opportunit', 'aws referral opportunit', 'opportunities from aws',
+            'opportunities aws sent', 'awsoriginated', 'aws originated leads',
+        ]
+        if any(t in q_lower for t in ao_triggers):
+            since_days_match = _re.search(r'last\s+(\d+)\s+(day|month)s?', q_lower)
+            since_days = 180
+            if since_days_match:
+                n = int(since_days_match.group(1))
+                since_days = n if since_days_match.group(2) == 'day' else n * 30
+            elif 'last month' in q_lower:
+                since_days = 30
+            elif 'last week' in q_lower:
+                since_days = 7
+            elif 'last year' in q_lower:
+                since_days = 365
+
+            try:
+                ao_opps = agent.find_ao_opportunities(since_days=since_days, limit=100)
+                if not ao_opps:
+                    answer = (
+                        f"No AWS-originated opportunities found in the last {since_days} days.\n\n"
+                        f"💡 Note: the Partner Central Agent's pipeline tools cannot filter "
+                        f"by `Origin = 'AWS Referral'`. This orchestrator chains `ListOpportunities` "
+                        f"+ `GetAwsOpportunitySummary` + `GetOpportunity` to find them — a value "
+                        f"prop of building your own agent layer."
+                    )
+                else:
+                    lines = [f"### AWS-originated opportunities (last {since_days} days)\n"]
+                    lines.append(f"Found **{len(ao_opps)}** AO opportunit{'y' if len(ao_opps) == 1 else 'ies'} (Origin = 'AWS Referral'):\n")
+                    lines.append("| Opportunity ID | Customer | Country | Stage | Region | Target Close | Last Modified |")
+                    lines.append("|---|---|---|---|---|---|---|")
+                    for o in ao_opps[:25]:
+                        last_mod = o.get('last_modified_date') or ''
+                        if hasattr(last_mod, 'strftime'):
+                            last_mod = last_mod.strftime('%Y-%m-%d')
+                        else:
+                            last_mod = str(last_mod)[:10]
+                        target_close = o.get('target_close_date') or ''
+                        if hasattr(target_close, 'strftime'):
+                            target_close = target_close.strftime('%Y-%m-%d')
+                        lines.append(
+                            f"| `{o.get('id')}` | {o.get('customer_name', '')[:30]} | "
+                            f"{o.get('country_code', '')} | {o.get('stage', '')} | "
+                            f"{o.get('region', '') or '—'} | {target_close or '—'} | "
+                            f"{last_mod} |"
+                        )
+                    lines.append(
+                        f"\n💡 *The Partner Central Agent cannot filter by Origin. The orchestrator "
+                        f"called `ListOpportunities` then `GetAwsOpportunitySummary` for each, "
+                        f"filtered on `Origin = 'AWS Referral'`, and used `GetOpportunity` to enrich "
+                        f"with stage and region.*"
+                    )
+                    answer = '\n'.join(lines)
+                return jsonify({
+                    "answer": answer,
+                    "session_id": session_id,
+                })
+            except Exception as e:
+                logger.error(f"Error finding AO opportunities: {e}", exc_info=True)
+                return jsonify({
+                    "answer": "❌ Error finding AO opportunities. Please check the server logs for details.",
+                    "session_id": session_id,
+                })
+
         # Check if user wants raw opportunity data or current status - call API directly for fresh data
         status_keywords = ['json', 'payload', 'raw data', 'complete data', 'full data', 'all fields', 'all data', 'getopportunity', 'review status', 'current status', 'what is the status', 'what\'s the status']
-        if any(word in question.lower() for word in status_keywords):
+        if opportunity_id and any(word in question.lower() for word in status_keywords):
             try:
                 opp_data = agent.mcp_client.get_opportunity(opportunity_id)
                 if opp_data:
@@ -954,7 +1197,7 @@ def chat():
         mcp_endpoint = config['endpoints']['partnercentral_mcp']
         
         # Build the question with opportunity context
-        if opportunity_id.lower() not in question.lower():
+        if opportunity_id and opportunity_id.lower() not in question.lower():
             full_question = f"For opportunity {opportunity_id}: {question}"
         else:
             full_question = question
