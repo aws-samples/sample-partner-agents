@@ -943,10 +943,18 @@ def chat():
             # a word like 'region/country/customer' to avoid matching parts of
             # other English words such as 'past').
             if not country_code:
+                # Two separate, unambiguous regexes (no overlapping \s* groups,
+                # bounded whitespace) to avoid ReDoS while still catching
+                # "country US", "country code: US", "country=US", "customer in US".
                 country_match = _re.search(
-                    r'(?:country\s*(?:code)?\s*[=:]?\s*|customer\s+in\s+)([a-z]{2})\b',
-                    q_lower
+                    r'\bcountry(?:\s{1,3}code)?\s{0,3}[=:]?\s{0,3}([a-z]{2})\b',
+                    q_lower,
                 )
+                if not country_match:
+                    country_match = _re.search(
+                        r'\bcustomer\s{1,3}in\s{1,3}([a-z]{2})\b',
+                        q_lower,
+                    )
                 if country_match:
                     country_code = country_match.group(1).upper()
 
