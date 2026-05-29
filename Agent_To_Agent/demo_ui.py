@@ -1036,8 +1036,9 @@ def chat():
                     "session_id": session_id,
                 })
             except Exception as e:
+                logger.error(f"Error finding engagement invitations: {e}", exc_info=True)
                 return jsonify({
-                    "answer": f"❌ Error finding engagement invitations: {str(e)[:300]}",
+                    "answer": "❌ Error finding engagement invitations. Please check the server logs for details.",
                     "session_id": session_id,
                 })
 
@@ -1106,8 +1107,9 @@ def chat():
                     "session_id": session_id,
                 })
             except Exception as e:
+                logger.error(f"Error finding AO opportunities: {e}", exc_info=True)
                 return jsonify({
-                    "answer": f"❌ Error finding AO opportunities: {str(e)[:300]}",
+                    "answer": "❌ Error finding AO opportunities. Please check the server logs for details.",
                     "session_id": session_id,
                 })
 
