@@ -1,0 +1,31 @@
+/**
+ * Local deployment config for the HubSpot card. Holds values that
+ * change per AWS account / region / stack — i.e. that no public
+ * upstream commit could possibly carry.
+ *
+ * `config.local.ts` is gitignored. The repo ships ONLY this `.example`
+ * template; the real file is materialised by:
+ *
+ *   - `infra/deploy.sh` after a successful CloudFormation deploy
+ *     (auto-writes the `ApiUrl` stack output here), OR
+ *   - manually copying this file to `config.local.ts` and editing the
+ *     constant below.
+ *
+ * The card's runtime imports `ACE_API_BASE_URL` from `./config.local`
+ * directly. If `config.local.ts` doesn't exist, the build will fail
+ * with a clear "module not found" error pointing the operator to this
+ * template.
+ */
+
+/**
+ * Base URL of the AWS API Gateway hosting the Share / Refresh /
+ * Submit / Pull lambdas. Output as `ApiUrl` from the
+ * `ace-share-refresh` CloudFormation stack — a value like
+ * `https://abc123.execute-api.us-east-1.amazonaws.com`.
+ *
+ * Must ALSO match the `permittedUrls.fetch[0]` entry in
+ * `app-hsmeta.local.json` (also auto-written by the deploy script).
+ * HubSpot blocks `hubspot.fetch` URLs that aren't in the allowlist.
+ */
+export const ACE_API_BASE_URL =
+  "https://REPLACE-ME.execute-api.us-east-1.amazonaws.com";
