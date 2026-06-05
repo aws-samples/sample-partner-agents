@@ -10,6 +10,7 @@ This agent:
 """
 
 import os
+import re
 import sys
 import json
 import logging
@@ -790,23 +791,204 @@ class PipedriveClient:
 
 class NextStepsGenerator:
     """Generate next steps using Claude AI"""
-    
+
+    # Anthropic API model used when use_bedrock=False. The Bedrock model is
+    # discovered at runtime via list_inference_profiles + list_foundation_models;
+    # set BEDROCK_MODEL_ID to skip discovery and pin a specific model.
+    DEFAULT_ANTHROPIC_MODEL_ID = 'claude-3-5-sonnet-20241022'
+
+    # Hardcoded fallback list, used only if discovery returns empty (e.g. the
+    # IAM policy doesn't include bedrock:ListInferenceProfiles /
+    # bedrock:ListFoundationModels). Ordered the way _rank_models would order them.
+    FALLBACK_BEDROCK_CANDIDATES = (
+        'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        'us.anthropic.claude-3-5-haiku-20241022-v1:0',
+        'us.anthropic.claude-3-haiku-20240307-v1:0',
+        'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+        'us.anthropic.claude-sonnet-4-20250514-v1:0',
+        'anthropic.claude-3-haiku-20240307-v1:0',
+        'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    )
+
     def __init__(self, use_bedrock: bool = True):
         self.use_bedrock = use_bedrock
         self._bedrock_client = None
+        self._bedrock_control_client = None
         self._anthropic_client = None
+        # Resolved on first use. None means "not yet probed".
+        self._resolved_bedrock_model_id = None
+        # Pinned override: BEDROCK_MODEL_ID skips discovery if set.
+        self._pinned_bedrock_model_id = os.environ.get('BEDROCK_MODEL_ID')
+        self.anthropic_model_id = (
+            os.environ.get('ANTHROPIC_MODEL_ID')
+            or os.environ.get('BEDROCK_MODEL_ID')
+            or self.DEFAULT_ANTHROPIC_MODEL_ID
+        )
+        self.bedrock_region = (
+            os.environ.get('AWS_REGION')
+            or os.environ.get('AWS_DEFAULT_REGION')
+            or 'us-east-1'
+        )
         # Stores the last warning/error if fallback was used
         self.last_warning = None
-    
+
+    @property
+    def bedrock_model_id(self):
+        """Resolved Bedrock model ID. None until probed (or if probing fails)."""
+        return self._resolved_bedrock_model_id or self._pinned_bedrock_model_id
+
+    def _resolve_bedrock_model(self) -> Optional[str]:
+        """Pick a Bedrock model that works for this account/region.
+
+        If BEDROCK_MODEL_ID is set, use it as-is (no probing). Otherwise:
+          1. List inference profiles + foundation models for Anthropic via
+             the bedrock control-plane API.
+          2. Score them (Haiku first, then Sonnet/Opus; newer date wins).
+          3. Probe each in score order with a tiny converse() call.
+          4. Stop at the first success and cache the winner.
+
+        Subsequent calls return the cached value with no extra API traffic.
+        """
+        if self._resolved_bedrock_model_id:
+            return self._resolved_bedrock_model_id
+        if self._pinned_bedrock_model_id:
+            self._resolved_bedrock_model_id = self._pinned_bedrock_model_id
+            return self._resolved_bedrock_model_id
+
+        client = self.bedrock_client
+        if client is None:
+            return None
+
+        candidates = self._discover_anthropic_models()
+        used_fallback = False
+        if not candidates:
+            logger.info(
+                f"Bedrock discovery returned no models in {self.bedrock_region} "
+                "(missing bedrock:List* permissions?). Using built-in fallback list."
+            )
+            candidates = list(self.FALLBACK_BEDROCK_CANDIDATES)
+            used_fallback = True
+
+        for candidate in candidates:
+            try:
+                client.converse(
+                    modelId=candidate,
+                    messages=[{"role": "user", "content": [{"text": "ping"}]}],
+                    inferenceConfig={"maxTokens": 5},
+                )
+                logger.info(
+                    f"Bedrock model resolved: {candidate} "
+                    f"(region={self.bedrock_region}, source={'fallback' if used_fallback else 'discovered'})"
+                )
+                self._resolved_bedrock_model_id = candidate
+                return candidate
+            except Exception as e:
+                err = str(e)
+                if any(t in err for t in (
+                    'AccessDeniedException', 'ValidationException',
+                    'ResourceNotFoundException', 'inference profile',
+                    'not found', 'does not exist', 'on-demand throughput',
+                )):
+                    logger.debug(f"Bedrock candidate {candidate} not usable: {err[:150]}")
+                    continue
+                # Anything else (network, throttling) — abort discovery so we
+                # don't burn through the candidate list on a transient error.
+                logger.warning(f"Bedrock probe aborted on {candidate}: {err[:200]}")
+                return None
+
+        logger.error(
+            f"No usable Bedrock model in {self.bedrock_region} "
+            f"(tried {len(candidates)} candidate(s))."
+        )
+        return None
+
+    def _discover_anthropic_models(self) -> List[str]:
+        """Return a scored, deduplicated list of Anthropic model/profile IDs.
+
+        Inference profiles (e.g. 'us.anthropic.claude-…') are listed first
+        because the newer Claude models are only invocable through them.
+        Bare model IDs are appended as a fallback for older models.
+        """
+        control = self.bedrock_control_client
+        if control is None:
+            return []
+
+        ids: List[str] = []
+
+        # 1. Inference profiles (cross-region routing). Cheaper to try first.
+        try:
+            paginator = control.get_paginator('list_inference_profiles')
+            for page in paginator.paginate():
+                for prof in page.get('inferenceProfileSummaries', []):
+                    pid = prof.get('inferenceProfileId') or prof.get('inferenceProfileArn', '')
+                    if 'anthropic' in pid.lower() and prof.get('status', 'ACTIVE') == 'ACTIVE':
+                        ids.append(pid)
+        except Exception as e:
+            logger.debug(f"list_inference_profiles failed: {str(e)[:150]}")
+
+        # 2. Foundation models (bare on-demand IDs).
+        try:
+            resp = control.list_foundation_models(byProvider='anthropic')
+            for m in resp.get('modelSummaries', []):
+                if 'TEXT' not in m.get('outputModalities', []):
+                    continue
+                if m.get('modelLifecycle', {}).get('status') != 'ACTIVE':
+                    continue
+                if 'ON_DEMAND' not in m.get('inferenceTypesSupported', ['ON_DEMAND']):
+                    # Skip models that *require* a profile — they'll fail
+                    # converse() with on-demand throughput unsupported.
+                    continue
+                ids.append(m['modelId'])
+        except Exception as e:
+            logger.debug(f"list_foundation_models failed: {str(e)[:150]}")
+
+        return self._rank_models(ids)
+
+    @staticmethod
+    def _rank_models(ids: List[str]) -> List[str]:
+        """Order Claude IDs by family (haiku→sonnet→opus) then by version date."""
+        family_rank = {'haiku': 0, 'sonnet': 1, 'opus': 2}
+        date_re = re.compile(r'(\d{8})')
+
+        def key(model_id: str):
+            mid = model_id.lower()
+            family = next((f for f in family_rank if f in mid), 'zzz_other')
+            date_match = date_re.search(mid)
+            # Newer dates first → negate the parsed int.
+            date_key = -int(date_match.group(1)) if date_match else 0
+            # Inference profiles (us./eu./apac.) preferred over bare IDs.
+            profile_priority = 0 if mid.split('.')[0] in ('us', 'eu', 'apac') else 1
+            return (family_rank.get(family, 99), profile_priority, date_key)
+
+        # Dedup while preserving sort order.
+        seen = set()
+        ordered = []
+        for mid in sorted(ids, key=key):
+            if mid not in seen:
+                seen.add(mid)
+                ordered.append(mid)
+        return ordered
+
     @property
     def bedrock_client(self):
         if self._bedrock_client is None and self.use_bedrock:
             try:
                 import boto3
-                self._bedrock_client = boto3.client('bedrock-runtime', region_name='us-east-1')
+                self._bedrock_client = boto3.client('bedrock-runtime', region_name=self.bedrock_region)
             except Exception as e:
                 logger.warning(f"Bedrock client not available: {e}")
         return self._bedrock_client
+
+    @property
+    def bedrock_control_client(self):
+        """Control-plane client used to list inference profiles + foundation models."""
+        if self._bedrock_control_client is None and self.use_bedrock:
+            try:
+                import boto3
+                self._bedrock_control_client = boto3.client('bedrock', region_name=self.bedrock_region)
+            except Exception as e:
+                logger.debug(f"Bedrock control-plane client not available: {e}")
+        return self._bedrock_control_client
     
     @property
     def anthropic_client(self):
@@ -862,9 +1044,17 @@ Based on the following context from various sources, generate clear, actionable 
 
         try:
             if self.use_bedrock and self.bedrock_client:
+                model_id = self._resolve_bedrock_model()
+                if not model_id:
+                    return self._generate_fallback(
+                        context_sources, opportunity_data,
+                        reason="No usable Bedrock Claude model found in region "
+                               f"{self.bedrock_region}. Enable Anthropic model access in "
+                               "the Bedrock console, or set BEDROCK_MODEL_ID."
+                    )
                 # Use converse API instead of invoke_model for better model compatibility
                 response = self.bedrock_client.converse(
-                    modelId='us.anthropic.claude-haiku-4-5-20251001-v1:0',
+                    modelId=model_id,
                     messages=[{
                         "role": "user",
                         "content": [{"text": full_prompt}]
@@ -878,7 +1068,7 @@ Based on the following context from various sources, generate clear, actionable 
                 
             elif self.anthropic_client:
                 response = self.anthropic_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model=self.anthropic_model_id,
                     max_tokens=1000,
                     messages=[{"role": "user", "content": full_prompt}]
                 )
