@@ -14,6 +14,7 @@ Usage:
     python verify_setup.py --catalog AWS
 """
 
+import os
 import json
 import sys
 import argparse
@@ -56,48 +57,74 @@ def check_aws_credentials():
         return False
 
 
-def check_bedrock_model_access():
-    """Verify Bedrock model access"""
+def check_bedrock_model_access(model_override: str = None):
+    """Verify Bedrock model access.
+
+    Uses the same dynamic discovery as orchestrator_agent.NextStepsGenerator:
+    list inference profiles + foundation models for Anthropic, rank them
+    (Haiku first, newest first, profiles preferred), and probe with a tiny
+    converse() call. Stops at the first success and reports it.
+
+    An explicit --model override or BEDROCK_MODEL_ID skips discovery and tests
+    that ID directly. If the dynamic path fails, we still report what *was*
+    discoverable so the user can pick one manually.
+    """
     print_section("2. Amazon Bedrock Model Access")
-    
+
     try:
-        import boto3
-        
-        # Test with converse API (more reliable than invoke_model)
-        bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
-        
-        # Try the recommended model
-        model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-        
-        response = bedrock.converse(
-            modelId=model_id,
-            messages=[{
-                "role": "user",
-                "content": [{"text": "Say 'Bedrock access verified' in exactly those words."}]
-            }],
-            inferenceConfig={"maxTokens": 50}
-        )
-        
-        output = response['output']['message']['content'][0]['text']
-        print_status(f"Bedrock model access ({model_id})", True)
-        print(f"   └─ Response: {output[:50]}...")
-        return True
-        
-    except bedrock.exceptions.AccessDeniedException as e:
-        print_status("Bedrock model access", False, "Access denied")
-        print("\n   Fix: Enable model access in Bedrock console (us-east-1)")
-        print("   1. Go to Amazon Bedrock console")
-        print("   2. Select 'Model access' in left menu")
-        print("   3. Enable Claude models")
+        import boto3  # noqa: F401  -- imported for side-effect / availability check
+    except ImportError as e:
+        print_status("Bedrock model access", False, f"boto3 not installed: {e}")
         return False
-        
+
+    try:
+        from orchestrator_agent import NextStepsGenerator
     except Exception as e:
-        error_msg = str(e)
-        if "Could not resolve" in error_msg or "EndpointConnectionError" in error_msg:
-            print_status("Bedrock model access", False, "Network/endpoint error")
-        else:
-            print_status("Bedrock model access", False, error_msg[:200])
+        print_status("Bedrock model access", False, f"Could not import orchestrator: {e}")
         return False
+
+    region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION') or 'us-east-1'
+    gen = NextStepsGenerator(use_bedrock=True)
+
+    # Honor --model: pin the override on the generator so the resolver short-circuits.
+    if model_override:
+        gen._pinned_bedrock_model_id = model_override
+
+    resolved = gen._resolve_bedrock_model()
+    if resolved:
+        # Verify with a real prompt so we get a response string to display.
+        try:
+            response = gen.bedrock_client.converse(
+                modelId=resolved,
+                messages=[{"role": "user", "content": [{"text": "Say 'Bedrock access verified' in exactly those words."}]}],
+                inferenceConfig={"maxTokens": 50},
+            )
+            output = response['output']['message']['content'][0]['text']
+            print_status(f"Bedrock model access ({resolved})", True)
+            print(f"   └─ Region: {region}")
+            print(f"   └─ Response: {output[:50]}...")
+            print(f"   └─ orchestrator_agent.py auto-discovers this model at runtime — "
+                  f"no BEDROCK_MODEL_ID required.")
+            return True
+        except Exception as e:
+            print_status("Bedrock model access", False, str(e)[:200])
+            return False
+
+    # Discovery failed. Tell the user what *is* discoverable in this region.
+    print_status("Bedrock model access", False,
+                 "No usable Anthropic Claude model discovered")
+    print("\n   Fix: enable Anthropic model access in the Bedrock console:")
+    print("   1. Go to Amazon Bedrock console (region above)")
+    print("   2. Select 'Model access' in the left menu")
+    print("   3. Enable Anthropic Claude models, then re-run this script")
+
+    candidates = gen._discover_anthropic_models()
+    if candidates:
+        print(f"\n   Anthropic models discoverable in {region}:")
+        for mid in candidates[:10]:
+            print(f"     - {mid}")
+        print("\n   Tip: pass --model <id> or set BEDROCK_MODEL_ID to skip auto-discovery.")
+    return False
 
 
 def check_partner_central_api(catalog: str):
@@ -272,6 +299,10 @@ def main():
     parser = argparse.ArgumentParser(description='Verify Agent-to-Agent setup')
     parser.add_argument('--catalog', '-c', default=None, 
                         help='Catalog to test (Sandbox or AWS). Defaults to config.json value.')
+    parser.add_argument('--model', '-m', default=None,
+                        help='Bedrock model/inference-profile ID to test. '
+                             'Overrides BEDROCK_MODEL_ID env var. If neither is set, '
+                             'a list of common Claude profiles is tried in order.')
     args = parser.parse_args()
     
     print("\n" + "="*60)
@@ -293,7 +324,7 @@ def main():
     
     # Run all checks
     results.append(check_aws_credentials())
-    results.append(check_bedrock_model_access())
+    results.append(check_bedrock_model_access(args.model))
     results.append(check_partner_central_api(catalog))
     results.append(check_partner_central_mcp(catalog))
     

@@ -137,11 +137,20 @@ aws iam put-user-policy \
   --policy-name BedrockInvokeClaude \
   --policy-document '{
     "Version": "2012-10-17",
-    "Statement": [{
-      "Effect": "Allow",
-      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-      "Resource": ["arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:*:*:inference-profile/*"]
-    }]
+    "Statement": [
+      {
+        "Sid": "InvokeClaude",
+        "Effect": "Allow",
+        "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        "Resource": ["arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:*:*:inference-profile/*"]
+      },
+      {
+        "Sid": "DiscoverClaudeModels",
+        "Effect": "Allow",
+        "Action": ["bedrock:ListFoundationModels", "bedrock:ListInferenceProfiles"],
+        "Resource": "*"
+      }
+    ]
   }'
 
 # 4. Create an access key — copy AccessKeyId and SecretAccessKey from output
