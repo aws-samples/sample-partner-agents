@@ -2,7 +2,7 @@
 
 > Two AWS-Partner-Central integrations for HubSpot deal records, in one repo. Pick what you need — they're independent and deploy with a single command.
 
-[![Node 22](https://img.shields.io/badge/node-22-339933?style=flat-square&logo=node.js&logoColor=white)](#prerequisites) [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](#prerequisites) [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![Node 22](https://img.shields.io/badge/node-22-339933?style=flat-square&logo=node.js&logoColor=white)](#prerequisites) [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](#prerequisites) [![License: MIT-0](https://img.shields.io/badge/license-MIT--0-green?style=flat-square)](LICENSE)
 
 ---
 
@@ -83,8 +83,8 @@ Cost is roughly **$0.45/month** for the CRM stack (Secrets Manager dominates), s
 Plan ~90 minutes for the CRM mode, ~30-45 minutes for Agent only. The guided step-by-step is in [`docs/workshop.md`](docs/workshop.md) — the commands below are the short version for experienced deployers.
 
 ```bash
-git clone <this-repo> hubspot-crm-pcagent-integration
-cd hubspot-crm-pcagent-integration
+git clone https://github.com/aws-samples/sample-partner-agents.git
+cd sample-partner-agents/CRM_Connections/hubspot
 
 # Install dependencies for the components you'll deploy.
 # (Skip directories you don't need.)
@@ -219,4 +219,4 @@ To remove the HubSpot UI Extensions, go to **HubSpot Settings → Integrations �
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT-0 — see [`LICENSE`](LICENSE).

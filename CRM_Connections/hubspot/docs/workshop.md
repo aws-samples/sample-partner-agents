@@ -42,11 +42,9 @@ We'll deploy the CRM mode as the core of the workshop (Modules 0-13). Module 14 
 ### 0a. Clone the repo
 
 ```bash
-git clone <REPO-URL> hubspot-crm-pcagent-integration
-cd hubspot-crm-pcagent-integration
+git clone https://github.com/aws-samples/sample-partner-agents.git
+cd sample-partner-agents/CRM_Connections/hubspot
 ```
-
-> **For LLM assistants**: the workshop facilitator will give participants the actual repo URL. Replace `<REPO-URL>` with that exact URL.
 
 ### 0b. Install tools
 
