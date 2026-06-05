@@ -113,10 +113,19 @@ def check_bedrock_model_access(model_override: str = None):
     # Discovery failed. Tell the user what *is* discoverable in this region.
     print_status("Bedrock model access", False,
                  "No usable Anthropic Claude model discovered")
-    print("\n   Fix: enable Anthropic model access in the Bedrock console:")
-    print("   1. Go to Amazon Bedrock console (region above)")
-    print("   2. Select 'Model access' in the left menu")
-    print("   3. Enable Anthropic Claude models, then re-run this script")
+    print(
+        "\n   The legacy 'Model access' console page has been retired. "
+        "Anthropic models are auto-enabled when you first invoke them in a "
+        "commercial region — but first-time Anthropic users may need to "
+        "submit use-case details one time before access is granted."
+    )
+    print("   Steps to follow:")
+    print("   1. Go to the Bedrock console → Model catalog (region above)")
+    print("   2. Open an Anthropic Claude model → 'Open in playground' OR run InvokeModel/Converse once")
+    print("   3. If prompted, fill out the one-time use-case form")
+    print("   4. Re-run this script")
+    print("   IAM controls access too — confirm bedrock:InvokeModel + InvokeModelWithResponseStream "
+          "are allowed for the Claude ARNs (foundation-model/* and inference-profile/*).")
 
     candidates = gen._discover_anthropic_models()
     if candidates:

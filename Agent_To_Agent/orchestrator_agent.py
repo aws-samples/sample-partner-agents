@@ -1048,9 +1048,15 @@ Based on the following context from various sources, generate clear, actionable 
                 if not model_id:
                     return self._generate_fallback(
                         context_sources, opportunity_data,
-                        reason="No usable Bedrock Claude model found in region "
-                               f"{self.bedrock_region}. Enable Anthropic model access in "
-                               "the Bedrock console, or set BEDROCK_MODEL_ID."
+                        reason=(
+                            f"No usable Bedrock Claude model found in region "
+                            f"{self.bedrock_region}. Anthropic models are auto-enabled on "
+                            "first invoke in commercial regions, but first-time users may "
+                            "need to submit a one-time use-case form via the Bedrock console "
+                            "Model catalog. Confirm IAM grants bedrock:InvokeModel on the "
+                            "Anthropic foundation-model/* and inference-profile/* ARNs, or "
+                            "set BEDROCK_MODEL_ID to pin a specific model."
+                        ),
                     )
                 # Use converse API instead of invoke_model for better model compatibility
                 response = self.bedrock_client.converse(

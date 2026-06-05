@@ -101,7 +101,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
    - Linux/Windows: see [AWS CLI install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
    - Verify: `aws --version` should report `aws-cli/2.x.x`
 3. **AWS credentials configured** — run `aws configure` (or SSO). Verify with `aws sts get-caller-identity`.
-4. **Amazon Bedrock model access** enabled in `us-east-1` for Claude models
+4. **Amazon Bedrock Claude access in `us-east-1`** — Anthropic models are auto-enabled the first time you invoke them in a commercial region. First-time users may need to submit a one-time use-case form via the Bedrock console **Model catalog** (the legacy "Model access" page has been retired).
 5. **IAM permissions** — the [`AWSPartnerCentralSandboxFullAccess`](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSPartnerCentralSandboxFullAccess.html) managed policy (or equivalent) covering Partner Central + MCP session management
 6. **Sandbox partner registration** — your AWS account registered as a partner in the Sandbox catalog
 7. **boto3 1.35.0+** — required for the `partnercentral-selling` client
@@ -113,7 +113,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 Before running the application, you need a configured AWS environment with:
 
 1. **An IAM user** with credentials configured locally (`aws configure` done, verified by `aws sts get-caller-identity`)
-2. **Bedrock model access** — Claude models enabled in `us-east-1`
+2. **Bedrock Claude access in `us-east-1`** — auto-enabled on first invoke; first-time users may need a one-time use-case form via the Bedrock console **Model catalog**
 3. **Partner Central permissions** — the `AWSPartnerCentralSandboxFullAccess` managed policy (or equivalent)
 4. **Sandbox partner registration** — your AWS account registered as a partner in the Sandbox catalog
 
@@ -581,7 +581,7 @@ The field mapping is defined in `crm/hubspot_mapper.py` (and equivalents for oth
 | `zsh: command not found: aws` | AWS CLI v2 not installed. | See [Prerequisites](#prerequisites). |
 | `Unknown service: 'partnercentral-selling'` | boto3 version too old. | `pip install --upgrade boto3 botocore` (need 1.35.0+). |
 | `AUTHENTICATION_FAILURE` from Partner Central | SigV4 creds expired or misconfigured. | Run `aws sts get-caller-identity`. Refresh creds. |
-| Bedrock `AccessDeniedException` | Claude model not enabled in `us-east-1`. | Bedrock console → **Model access** → request Claude models. |
+| Bedrock `AccessDeniedException` | IAM doesn't grant `bedrock:InvokeModel`, OR (for first-time Anthropic users) the one-time use-case form hasn't been submitted. | Confirm the IAM policy includes `bedrock:InvokeModel` + `bedrock:InvokeModelWithResponseStream` on the Claude ARNs. If it's a first-time use, open the Bedrock console **Model catalog** → an Anthropic Claude model → invoke once (or submit the use-case form when prompted). |
 | Rate limit (`-32004`) from Partner Central | Too many requests. | `sendMessage` allows 2 req/min sustained. Add backoff logic. |
 | NextSteps exceeds 255 chars | Field limit in Partner Central. | Ensure AI generates concise content under 255 characters. |
 | `401 INVALID_SESSION_ID` from Salesforce | Access token expired (default 2h). | Refresh the Salesforce token. |
