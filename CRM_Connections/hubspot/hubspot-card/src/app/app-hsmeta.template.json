@@ -1,0 +1,29 @@
+{
+  "uid": "ace-share-card-app-v2",
+  "type": "app",
+  "config": {
+    "name": "ACE Share Card",
+    "description": "Custom deal card that shares HubSpot deals with AWS Partner Central Sandbox on demand.",
+    "distribution": "private",
+    "auth": {
+      "type": "static",
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write",
+        "crm.objects.companies.read",
+        "crm.schemas.deals.read",
+        "crm.schemas.deals.write"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": [
+        "https://REPLACE-ME.execute-api.us-east-1.amazonaws.com"
+      ],
+      "iframe": [],
+      "img": []
+    }
+  }
+}

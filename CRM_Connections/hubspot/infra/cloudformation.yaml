@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  ACE Share / Refresh / Submit / Pull backend. Three API-Gateway-backed
+  Lambdas (Share, Refresh, Submit) plus one EventBridge-driven Lambda
+  (Pull). Secrets Manager holds ACE credentials + HubSpot private-app
+  token + HubSpot client secret. Deploys into the user's own AWS
+  account as a replacement for HubSpot Serverless Functions (which
+  require HubSpot Enterprise).
+
+Parameters:
+  ShareCodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the Share Lambda zip (injected by `aws cloudformation package`)
+  ShareCodeS3Key:
+    Type: String
+    Description: S3 key for the Share Lambda zip
+  RefreshCodeS3Bucket:
+    Type: String
+  RefreshCodeS3Key:
+    Type: String
+  PullCodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the Pull Lambda zip (EventBridge-driven AWS → HubSpot reverse sync)
+  PullCodeS3Key:
+    Type: String
+    Description: S3 key for the Pull Lambda zip
+  SubmitCodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the Submit Lambda zip (deliberate-Submit_Action handler — see ace-share-submit-decoupling spec)
+  SubmitCodeS3Key:
+    Type: String
+    Description: S3 key for the Submit Lambda zip
+  HubspotPipelineId:
+    Type: String
+    Default: default
+    Description: HubSpot pipeline id where new Pull-created deals land
+  PullDefaultStage:
+    Type: String
+    Default: appointmentscheduled
+    Description: HubSpot stage id used when the AWS stage doesn't reverse-map via STAGE_MAPPING
+  EnvSuffix:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional environment suffix appended to globally-named resources
+      (Lambdas, IAM role, DynamoDB table, log groups, Secrets Manager
+      secret, EventBridge rule). Leave empty for the canonical names
+      (`ace-share-ShareLambda`, etc.). Use a short token like `dev` or
+      `prod` to deploy multiple parallel environments in one AWS
+      account without name collisions.
+    AllowedPattern: "^[a-z0-9-]{0,16}$"
+    ConstraintDescription: >-
+      Lowercase letters, digits, and hyphens only; max 16 characters.
+      Empty for the canonical names.
+
+Conditions:
+  HasSuffix: !Not [!Equals [!Ref EnvSuffix, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Secrets Manager — placeholder blob. Populated by infra/set-secrets.sh.
+  # ---------------------------------------------------------------------------
+  AceShareSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If [HasSuffix, !Sub "crm-connector/ace-share-${EnvSuffix}", "crm-connector/ace-share"]
+      Description: ACE credentials + stage mappings + HubSpot private-app token + HubSpot app UID
+      SecretString: "{}"
+
+  # ---------------------------------------------------------------------------
+  # DynamoDB — per-opportunity lock for the Pull Lambda.
+  #
+  # Why: AWS Partner Central fires multiple events per opportunity
+  # during creation (one `Opportunity Created`, then several
+  # `Opportunity Updated` as the agent fills in fields). All of them
+  # land on PullLambda concurrently. Without serialisation per opp,
+  # the check-then-create path (`findDealByAceOpportunityId` →
+  # `createDeal`) races and produces duplicate HubSpot deals.
+  #
+  # Capping global Lambda concurrency would also fix it but at
+  # unacceptable cost: a multi-tenant deployment receiving updates for
+  # many different opps simultaneously would serialise everything,
+  # collapsing throughput to one event at a time. Per-opp locking
+  # keeps different-opp invocations parallel while serialising
+  # same-opp ones.
+  #
+  # Mechanics: each invocation does a conditional PutItem on
+  # `oppId` (partition key). The condition `attribute_not_exists(oppId)
+  # OR expiresAt < :now` lets us reclaim stale locks if the previous
+  # holder crashed. TTL on `expiresAt` reaps abandoned items so the
+  # table stays small. On clean exit the holder DeleteItems its row.
+  # On lock-acquire failure, the handler throws and EventBridge
+  # retries with exponential backoff — by which point the holder has
+  # written `ace_opportunity_id` and the retry takes the Refresh path.
+  # ---------------------------------------------------------------------------
+  PullLockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !If [HasSuffix, !Sub "ace-share-pull-locks-${EnvSuffix}", "ace-share-pull-locks"]
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: oppId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: oppId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  # ---------------------------------------------------------------------------
+  # IAM — single execution role shared by all three Lambdas. Least privilege:
+  # CloudWatch Logs write + GetSecretValue on the one secret. No S3, no KMS,
+  # no other services.
+  # ---------------------------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !If [HasSuffix, !Sub "ace-share-lambda-execution-${EnvSuffix}", "ace-share-lambda-execution"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        # AWS-managed policy granting `partnercentral:*` on the Sandbox
+        # catalog only (Condition: partnercentral:Catalog == "Sandbox").
+        # Replaces the hand-rolled inline policy we previously
+        # maintained — that policy listed the 16 opportunity-management
+        # actions plus the orchestrated sub-actions invoked internally
+        # by `StartEngagementFromOpportunityTask` (e.g. CreateEngagement,
+        # CreateResourceSnapshotJob, SubmitOpportunity). The managed
+        # policy stays current as AWS adds new ACE actions, and the
+        # built-in Sandbox condition matches our hardcoded
+        # `ACE_CATALOG = "Sandbox"` in `lib/config.ts`. To move to the
+        # production catalog, swap to AWSPartnerCentralFullAccess (no
+        # Sandbox restriction) or AWSPartnerCentralOpportunityManagement
+        # (curated subset, no catalog restriction).
+        - arn:aws:iam::aws:policy/AWSPartnerCentralSandboxFullAccess
+      Policies:
+        - PolicyName: ReadAceShareSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadAceShareSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AceShareSecret
+        - PolicyName: PullLockTableAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Per-opportunity lock + dealId cache used by PullLambda
+              # only. Operations: acquire (PutItem with condition),
+              # release-with-cache (UpdateItem to set dealId + extend
+              # expiresAt), and cache-peek after lock contention
+              # (GetItem). Share / Refresh never touch the table.
+              - Sid: PullLockTableAccess
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt PullLockTable.Arn
+
+  # ---------------------------------------------------------------------------
+  # Log groups — explicit resources so we control RetentionInDays. Implicit
+  # log groups created by Lambda default to Never-expire.
+  # ---------------------------------------------------------------------------
+  ShareLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [HasSuffix, !Sub "/aws/lambda/ace-share-ShareLambda-${EnvSuffix}", "/aws/lambda/ace-share-ShareLambda"]
+      RetentionInDays: 30
+
+  RefreshLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [HasSuffix, !Sub "/aws/lambda/ace-share-RefreshLambda-${EnvSuffix}", "/aws/lambda/ace-share-RefreshLambda"]
+      RetentionInDays: 30
+
+  # ---------------------------------------------------------------------------
+  # Lambda functions — Node.js 20 runtime, bundles produced by esbuild.
+  # Worst-case Share create path runs ~9s (see design.md §Latency budget).
+  # 29s timeout (CLIENT_TIMEOUT TRIPLE: Share, Refresh, Submit) sits just
+  # under the 30s API Gateway integration ceiling.
+  # ---------------------------------------------------------------------------
+  ShareLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: ShareLogGroup
+    Properties:
+      FunctionName: !If [HasSuffix, !Sub "ace-share-ShareLambda-${EnvSuffix}", "ace-share-ShareLambda"]
+      Runtime: nodejs20.x
+      Handler: share.handler
+      MemorySize: 512
+      # CLIENT_TIMEOUT TRIPLE: Share, Refresh, and Submit all align at 29 s
+      # to stay just under the 30 s API Gateway integration ceiling. Submit
+      # was added by the ace-share-submit-decoupling spec; bumping Share and
+      # Refresh from 25 → 29 keeps the trio consistent.
+      Timeout: 29
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ShareCodeS3Bucket
+        S3Key: !Ref ShareCodeS3Key
+      Environment:
+        Variables:
+          ACE_SHARE_SECRET_ID: !If [HasSuffix, !Sub "crm-connector/ace-share-${EnvSuffix}", "crm-connector/ace-share"]
+          LOG_LEVEL: info
+          # Share writes to the same DynamoDB table the Pull Lambda
+          # uses for its per-opp lock + dealId cache. After a
+          # successful CreateOpportunity, Share seeds a cache row so
+          # the immediately-following EventBridge `Opportunity Created`
+          # event — which often arrives before HubSpot's search index
+          # has indexed the new `ace_opportunity_id` — short-circuits
+          # straight to Refresh instead of duplicate-creating.
+          PULL_LOCK_TABLE: !Ref PullLockTable
+
+  RefreshLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: RefreshLogGroup
+    Properties:
+      FunctionName: !If [HasSuffix, !Sub "ace-share-RefreshLambda-${EnvSuffix}", "ace-share-RefreshLambda"]
+      Runtime: nodejs20.x
+      Handler: refresh.handler
+      MemorySize: 512
+      # CLIENT_TIMEOUT TRIPLE: see ShareLambda comment.
+      Timeout: 29
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref RefreshCodeS3Bucket
+        S3Key: !Ref RefreshCodeS3Key
+      Environment:
+        Variables:
+          ACE_SHARE_SECRET_ID: !If [HasSuffix, !Sub "crm-connector/ace-share-${EnvSuffix}", "crm-connector/ace-share"]
+          LOG_LEVEL: info
+
+  # ---------------------------------------------------------------------------
+  # API Gateway HTTP API v2 — three POST routes. Signature verification
+  # happens inside each handler (REQUEST authorizers can't see the body).
+  # ---------------------------------------------------------------------------
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !If [HasSuffix, !Sub "ace-share-refresh-api-${EnvSuffix}", "ace-share-refresh-api"]
+      ProtocolType: HTTP
+      Description: HubSpot Custom Card backend (Share / Refresh / Submit)
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  # --- Share integration + route --------------------------------------------
+
+  ShareIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ShareLambda.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  ShareRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /share
+      Target: !Sub integrations/${ShareIntegration}
+      AuthorizationType: NONE
+
+  ShareInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ShareLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/share
+
+  # --- Refresh integration + route ------------------------------------------
+
+  RefreshIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt RefreshLambda.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  RefreshRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /refresh
+      Target: !Sub integrations/${RefreshIntegration}
+      AuthorizationType: NONE
+
+  RefreshInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RefreshLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/refresh
+
+  # --- Submit Lambda + integration + route ----------------------------------
+  #
+  # Submit_Function (POST /submit). Introduced by the
+  # ace-share-submit-decoupling spec to split the Share button into two
+  # intent-distinct actions:
+  #   - Share creates the AWS opportunity (and may also submit, when all
+  #     submission-required fields are populated).
+  #   - Submit deliberately calls StartEngagementFromOpportunityTask on an
+  #     existing AWS opportunity that's still `Pending Submission`.
+  # Same handler-shape as Share / Refresh: HubSpot v3 HMAC verification
+  # inside the handler, same `LambdaExecutionRole`, same secret. The
+  # Submit Lambda does NOT touch the PullLockTable (only Pull serialises
+  # per-opp).
+
+  SubmitLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [HasSuffix, !Sub "/aws/lambda/ace-share-SubmitLambda-${EnvSuffix}", "/aws/lambda/ace-share-SubmitLambda"]
+      RetentionInDays: 30
+
+  SubmitLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: SubmitLogGroup
+    Properties:
+      FunctionName: !If [HasSuffix, !Sub "ace-share-SubmitLambda-${EnvSuffix}", "ace-share-SubmitLambda"]
+      Runtime: nodejs20.x
+      Handler: submit.handler
+      MemorySize: 512
+      # CLIENT_TIMEOUT TRIPLE: Share, Refresh, Submit all align at 29 s.
+      Timeout: 29
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref SubmitCodeS3Bucket
+        S3Key: !Ref SubmitCodeS3Key
+      Environment:
+        Variables:
+          ACE_SHARE_SECRET_ID: !If [HasSuffix, !Sub "crm-connector/ace-share-${EnvSuffix}", "crm-connector/ace-share"]
+          LOG_LEVEL: info
+
+  SubmitIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SubmitLambda.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  SubmitRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /submit
+      Target: !Sub integrations/${SubmitIntegration}
+      AuthorizationType: NONE
+
+  SubmitInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SubmitLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/submit
+
+  # ---------------------------------------------------------------------------
+  # Pull Lambda — EventBridge-driven AWS → HubSpot reverse sync.
+  #
+  # When Partner Central emits an `Opportunity Created` or
+  # `Opportunity Updated` event on the default event bus, this Lambda
+  # picks it up. It either:
+  #   - Auto-refreshes the matching HubSpot deal (if one exists with
+  #     `ace_opportunity_id == event.detail.opportunity.identifier`); or
+  #   - Auto-creates a new HubSpot deal seeded from the AWS state.
+  #
+  # Same IAM role and Secrets Manager access as Share / Refresh — the
+  # role's AWSPartnerCentralSandboxFullAccess covers GetOpportunity /
+  # GetAwsOpportunitySummary.
+  # ---------------------------------------------------------------------------
+  PullLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [HasSuffix, !Sub "/aws/lambda/ace-share-PullLambda-${EnvSuffix}", "/aws/lambda/ace-share-PullLambda"]
+      RetentionInDays: 30
+
+  PullLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: PullLogGroup
+    Properties:
+      FunctionName: !If [HasSuffix, !Sub "ace-share-PullLambda-${EnvSuffix}", "ace-share-PullLambda"]
+      Runtime: nodejs20.x
+      Handler: pull.handler
+      MemorySize: 512
+      # Pull does at most: HubSpot search + GetOpportunity +
+      # GetAwsOpportunitySummary + (refresh write OR create). Worst-case
+      # latency is comparable to Refresh (~3-4s); 25s leaves ample
+      # headroom. Pull is EventBridge-driven so it doesn't share the
+      # 29 s CLIENT_TIMEOUT TRIPLE that aligns Share, Refresh, and
+      # Submit under the API Gateway 30 s ceiling.
+      #
+      # We deliberately do NOT cap ReservedConcurrentExecutions here.
+      # An earlier version of this template set it to 1 to serialise
+      # event delivery and avoid the duplicate-deal race, but that
+      # collapses throughput across all opportunities — events for
+      # different opps couldn't run in parallel either. The per-opp
+      # serialisation now lives in the `PullLockTable` DynamoDB lock
+      # acquired at the top of `runPull`. Different opps run wide
+      # open; same-opp invocations contend on the lock and back off
+      # via EventBridge's automatic retry policy.
+      Timeout: 25
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref PullCodeS3Bucket
+        S3Key: !Ref PullCodeS3Key
+      Environment:
+        Variables:
+          ACE_SHARE_SECRET_ID: !If [HasSuffix, !Sub "crm-connector/ace-share-${EnvSuffix}", "crm-connector/ace-share"]
+          LOG_LEVEL: info
+          HUBSPOT_PIPELINE_ID: !Ref HubspotPipelineId
+          PULL_DEFAULT_STAGE: !Ref PullDefaultStage
+          PULL_LOCK_TABLE: !Ref PullLockTable
+
+  # EventBridge rule — captures `Opportunity Created` and `Opportunity
+  # Updated` events scoped to the Sandbox catalog. The default bus
+  # receives Partner Central events automatically; no SaaS-partner-bus
+  # mirroring is needed.
+  PullEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !If [HasSuffix, !Sub "ace-share-PullEventRule-${EnvSuffix}", "ace-share-PullEventRule"]
+      Description: Forwards Partner Central opportunity events to the Pull Lambda
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.partnercentral-selling
+        detail-type:
+          - Opportunity Created
+          - Opportunity Updated
+        detail:
+          catalog:
+            - Sandbox
+      State: ENABLED
+      Targets:
+        - Id: PullLambdaTarget
+          Arn: !GetAtt PullLambda.Arn
+
+  # Allow the EventBridge rule above to invoke the Pull Lambda.
+  PullInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PullLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt PullEventRule.Arn
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the ACE Share / Refresh / Submit API. The card POSTs to <ApiUrl>/share, <ApiUrl>/refresh, and <ApiUrl>/submit.
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiUrl
+
+  SecretArn:
+    Description: ARN of the Secrets Manager secret holding ACE + HubSpot credentials.
+    Value: !Ref AceShareSecret
+    Export:
+      Name: !Sub ${AWS::StackName}-SecretArn

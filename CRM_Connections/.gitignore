@@ -1,0 +1,46 @@
+# Dependencies — installed via npm/pip, never committed
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build artifacts
+dist/
+*.zip
+.tmp-*
+.tmp/
+
+# Local secrets / config (commit the .example variants only)
+.env
+.env.local
+hubspot.config.yml
+.aws/
+
+# Per-deployment local config — auto-generated, holds account-specific
+# values. Only the .example / .template variants are committed.
+*.local.ts
+*.local.json
+# HubSpot card manifest — materialised from app-hsmeta.template.json by
+# the npm postinstall hook and patched with the live API URL by deploy.sh.
+app-hsmeta.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

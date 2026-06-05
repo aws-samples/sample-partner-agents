@@ -1,0 +1,23 @@
+# HubSpot CLI portal binding for the `hs project upload` command.
+#
+# THIS IS A TEMPLATE. Copy to `hubspot.config.yml` and let the HubSpot CLI
+# populate the `personalAccessKey` / `auth.tokenInfo` fields for you:
+#
+#   cp hubspot.config.yml.example hubspot.config.yml
+#   hs auth                       # interactive — pick "Personal Access Key"
+#
+# `hubspot.config.yml` (without the `.example` suffix) is gitignored, so
+# the real tokens stay on your workstation.
+#
+# `name`     is the local alias you pick (anything; used as `hs --portal <name>`).
+# `portalId` is your HubSpot account ID (Settings → Account → Account Information).
+# `accountType` is "STANDARD" for free / Standard / Pro portals; the card has
+# no `app.functions` block so it deploys on every plan.
+defaultPortal: my-portal
+portals:
+  - name: my-portal
+    env: prod
+    authType: personalaccesskey
+    accountType: STANDARD
+    portalId: 0000000
+    # personalAccessKey: <run `hs auth` to populate this and `auth.tokenInfo`>

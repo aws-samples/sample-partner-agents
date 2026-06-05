@@ -1,0 +1,10 @@
+# HubSpot CLI portal binding for `hs project upload`. THIS IS A TEMPLATE.
+# Copy to `hubspot.config.yml` and run `hs auth` to populate the access key.
+defaultPortal: my-portal
+portals:
+  - name: my-portal
+    env: prod
+    authType: personalaccesskey
+    accountType: STANDARD
+    portalId: 0000000
+    # personalAccessKey: <run `hs auth` to populate this and `auth.tokenInfo`>

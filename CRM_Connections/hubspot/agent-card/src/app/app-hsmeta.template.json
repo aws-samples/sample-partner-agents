@@ -1,0 +1,25 @@
+{
+  "uid": "ace-agent-card-app",
+  "type": "app",
+  "config": {
+    "name": "AWS Partner Central Agent",
+    "description": "Conversational card on the deal record that talks to AWS Partner Central via the Agent MCP server.",
+    "distribution": "private",
+    "auth": {
+      "type": "static",
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.deals.read"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": [
+        "https://REPLACE-ME.execute-api.us-east-1.amazonaws.com"
+      ],
+      "iframe": [],
+      "img": []
+    }
+  }
+}

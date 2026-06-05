@@ -1,0 +1,11 @@
+{
+  "uid": "ace_agent_card_v1",
+  "type": "card",
+  "config": {
+    "name": "AWS Partner Central Agent",
+    "description": "Conversational card for asking AWS Partner Central about this deal.",
+    "entrypoint": "/app/cards/AgentCard.tsx",
+    "location": "crm.record.tab",
+    "objectTypes": ["DEAL"]
+  }
+}

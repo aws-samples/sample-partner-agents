@@ -1,0 +1,10 @@
+{
+  "name": "ace-share-card-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HubSpot UI Extension runtime dependencies for AceShareCard.tsx (Developer Platform 2025.2). HubSpot's project build looks for this file when packaging the card; the root hubspot-card/package.json holds local test tooling only.",
+  "dependencies": {
+    "@hubspot/ui-extensions": "^0.13.0",
+    "react": "^18.2.0"
+  }
+}

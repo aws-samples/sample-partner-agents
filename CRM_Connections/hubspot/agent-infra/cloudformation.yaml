@@ -1,0 +1,340 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  AWS Partner Central Agent backend. Two Lambdas (sync AgentLambda + async
+  AgentAsyncLambda) fronted by a single API Gateway HTTP API, plus a
+  DynamoDB job table and a Secrets Manager secret holding the HubSpot client
+  secret + private app token + agent catalog. Independent of the
+  Share/Refresh stack — partners can deploy this on its own without the
+  bidirectional sync, or alongside it in the same AWS account.
+
+Parameters:
+  AgentCodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the Agent Lambda zip
+  AgentCodeS3Key:
+    Type: String
+    Description: S3 key for the Agent Lambda zip
+  AgentAsyncCodeS3Key:
+    Type: String
+    Description: S3 key for the async Agent Lambda zip (start/poll/worker)
+  EnvSuffix:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional environment suffix appended to globally-named resources
+      (Lambdas, IAM roles, DynamoDB job table, log groups, Secrets
+      Manager secret). Leave empty for the canonical names
+      (`ace-agent-AgentLambda`, etc.). Use a short token like `dev`
+      or `prod` to deploy multiple parallel environments in one AWS
+      account without name collisions.
+    AllowedPattern: "^[a-z0-9-]{0,16}$"
+    ConstraintDescription: >-
+      Lowercase letters, digits, and hyphens only; max 16 characters.
+      Empty for the canonical names.
+
+Conditions:
+  HasSuffix: !Not [!Equals [!Ref EnvSuffix, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Secrets Manager — placeholder blob. Populated by agent-infra/set-secrets.sh.
+  # ---------------------------------------------------------------------------
+  AceAgentSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If [HasSuffix, !Sub "crm-connector/ace-agent-${EnvSuffix}", "crm-connector/ace-agent"]
+      Description: Agent stack secrets — HubSpot client secret, optional private app token, agent catalog.
+      SecretString: "{}"
+
+  # ---------------------------------------------------------------------------
+  # IAM — single execution role for both Lambdas.
+  #
+  # MCP protocol + Partner Central data access via two AWS-managed policies:
+  #   - AWSMcpServiceActionsFullAccess: grants `partnercentral:UseSession`
+  #     plus all MCP-scoped service actions (`aws:IsMcpServiceAction == true`).
+  #   - AWSPartnerCentralSandboxFullAccess: grants the data-access actions
+  #     scoped to the Sandbox catalog only. To enable production catalog
+  #     access, swap to AWSPartnerCentralFullAccess.
+  #
+  # The agent NEVER receives long-lived static credentials — SigV4 signing
+  # uses the role's credentials at runtime via `defaultProvider()`.
+  # ---------------------------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !If [HasSuffix, !Sub "ace-agent-lambda-execution-${EnvSuffix}", "ace-agent-lambda-execution"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        # MCP protocol actions (UseSession + aws:IsMcpServiceAction-scoped tools).
+        - arn:aws:iam::aws:policy/AWSMcpServiceActionsFullAccess
+        # Sandbox-scoped data access (Get*, List*, UpdateOpportunity, etc.).
+        # To enable production catalog access, replace with
+        # `AWSPartnerCentralFullAccess` (no Sandbox restriction).
+        # To enable funding-program workflows, additionally attach
+        # `AWSPartnerCentralFundingFullAccess` once that managed policy is
+        # available, or extend with an inline statement.
+        - arn:aws:iam::aws:policy/AWSPartnerCentralSandboxFullAccess
+      Policies:
+        - PolicyName: ReadAceAgentSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadAceAgentSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AceAgentSecret
+
+  # ---------------------------------------------------------------------------
+  # Log groups
+  # ---------------------------------------------------------------------------
+  AgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [HasSuffix, !Sub "/aws/lambda/ace-agent-AgentLambda-${EnvSuffix}", "/aws/lambda/ace-agent-AgentLambda"]
+      RetentionInDays: 30
+
+  # ---------------------------------------------------------------------------
+  # Lambda function
+  #
+  # The Agent Lambda's worst-case latency is bounded by the MCP server's
+  # response time. Per AWS docs, sendMessage uses Server-Sent Events but
+  # we disable streaming (stream: false) since hubspot.fetch can't surface
+  # SSE to the React card. A non-streaming response from a complex query
+  # can take 15+ seconds. Approval responses that trip a CreateOpportunity
+  # tool call have been observed taking up to ~25s end-to-end on the MCP
+  # side, so we run Lambda at 29s — 1s under API Gateway HTTP's hard
+  # 30s integration cap. If even 29s isn't enough, the path forward is
+  # async (POST returns 202 + jobId, card polls a status endpoint)
+  # since 30s is the API Gateway HTTP API ceiling and can't be raised.
+  # ---------------------------------------------------------------------------
+  AgentLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: AgentLogGroup
+    Properties:
+      FunctionName: !If [HasSuffix, !Sub "ace-agent-AgentLambda-${EnvSuffix}", "ace-agent-AgentLambda"]
+      Runtime: nodejs20.x
+      Handler: agent.handler
+      MemorySize: 512
+      Timeout: 29
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref AgentCodeS3Bucket
+        S3Key: !Ref AgentCodeS3Key
+      Environment:
+        Variables:
+          ACE_AGENT_SECRET_ID: !If [HasSuffix, !Sub "crm-connector/ace-agent-${EnvSuffix}", "crm-connector/ace-agent"]
+          LOG_LEVEL: info
+
+  # ---------------------------------------------------------------------------
+  # API Gateway HTTP API v2 — single POST /agent route. Signature
+  # verification happens inside the Agent Lambda (REQUEST authorizers
+  # can't see the request body, which the HubSpot v3 HMAC covers).
+  # ---------------------------------------------------------------------------
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !If [HasSuffix, !Sub "ace-agent-api-${EnvSuffix}", "ace-agent-api"]
+      ProtocolType: HTTP
+      Description: HubSpot Custom Card backend (Partner Central Agent)
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  AgentIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt AgentLambda.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  AgentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /agent
+      Target: !Sub integrations/${AgentIntegration}
+      AuthorizationType: NONE
+
+  AgentInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AgentLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/agent
+
+  # ---------------------------------------------------------------------------
+  # Async path — DynamoDB job table + dedicated Lambda + start/poll routes.
+  #
+  # Why: API Gateway HTTP APIs cap at 30s integration timeout. The
+  # Partner Central Agent MCP Server's sendMessage routinely takes
+  # 25-40s for tool-call approvals as session context grows. The
+  # async path lets the card POST to /agent/start (returns {jobId}
+  # in <100ms), the start handler async-invokes a worker Lambda
+  # (untethered from API Gateway, full 5-min budget), and the card
+  # polls /agent/poll until the job lands. The polling pattern is
+  # the AWS-recommended workaround for sub-30s ceilings on long-
+  # running agent calls (per the MCP getting-started docs, which
+  # describe SSE as the alternative — that's not viable from
+  # hubspot.fetch which is JSON-only).
+  #
+  # IAM: the async Lambda gets DynamoDB read/write on the job table,
+  # plus lambda:InvokeFunction on itself for the self-invoke pattern.
+  # The synchronous AgentLambda's IAM stays unchanged.
+  # ---------------------------------------------------------------------------
+  AgentJobTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !If [HasSuffix, !Sub "ace-agent-jobs-${EnvSuffix}", "ace-agent-jobs"]
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  AgentAsyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [HasSuffix, !Sub "/aws/lambda/ace-agent-AgentAsyncLambda-${EnvSuffix}", "/aws/lambda/ace-agent-AgentAsyncLambda"]
+      RetentionInDays: 30
+
+  AgentAsyncExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !If [HasSuffix, !Sub "ace-agent-async-lambda-execution-${EnvSuffix}", "ace-agent-async-lambda-execution"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSMcpServiceActionsFullAccess
+        - arn:aws:iam::aws:policy/AWSPartnerCentralSandboxFullAccess
+      Policies:
+        - PolicyName: ReadAceAgentSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AceAgentSecret
+        - PolicyName: AgentJobTableAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt AgentJobTable.Arn
+
+  AgentAsyncLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AgentAsyncLogGroup
+      - AgentJobTable
+    Properties:
+      FunctionName: !If [HasSuffix, !Sub "ace-agent-AgentAsyncLambda-${EnvSuffix}", "ace-agent-AgentAsyncLambda"]
+      Runtime: nodejs20.x
+      # Three event shapes (start, poll, worker). Worker invocations
+      # need the long timeout for MCP calls; start/poll only spend a
+      # few hundred ms each. The single function gets the worst-case
+      # budget (300s = 5 minutes) which costs nothing extra under
+      # pay-per-request because the poll/start invocations terminate
+      # in their own runtime.
+      Handler: agent-async.handler
+      MemorySize: 512
+      Timeout: 300
+      Role: !GetAtt AgentAsyncExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref AgentCodeS3Bucket
+        S3Key: !Ref AgentAsyncCodeS3Key
+      Environment:
+        Variables:
+          ACE_AGENT_SECRET_ID: !If [HasSuffix, !Sub "crm-connector/ace-agent-${EnvSuffix}", "crm-connector/ace-agent"]
+          AGENT_JOB_TABLE: !Ref AgentJobTable
+          LOG_LEVEL: info
+
+  # Self-invoke permission so the start handler can dispatch the
+  # worker invocation. Created AFTER the function (so we can name
+  # it) but logically a closure on the role.
+  AgentAsyncSelfInvokePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SelfInvoke
+      Roles:
+        - !Ref AgentAsyncExecutionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt AgentAsyncLambda.Arn
+
+  AgentAsyncIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt AgentAsyncLambda.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  AgentStartRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /agent/start
+      Target: !Sub integrations/${AgentAsyncIntegration}
+      AuthorizationType: NONE
+
+  AgentPollRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /agent/poll
+      Target: !Sub integrations/${AgentAsyncIntegration}
+      AuthorizationType: NONE
+
+  AgentAsyncInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AgentAsyncLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/agent/*
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the Agent API. The card POSTs to <ApiUrl>/agent.
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiUrl
+
+  SecretArn:
+    Description: ARN of the Secrets Manager secret holding agent credentials.
+    Value: !Ref AceAgentSecret
+    Export:
+      Name: !Sub ${AWS::StackName}-SecretArn

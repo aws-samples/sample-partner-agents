@@ -1,0 +1,10 @@
+{
+  "name": "ace-agent-card-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HubSpot UI Extension runtime dependencies for AgentCard.tsx (Developer Platform 2025.2). HubSpot's project build looks for this file when packaging the card; the root agent-card/package.json holds local test tooling only.",
+  "dependencies": {
+    "@hubspot/ui-extensions": "^0.13.0",
+    "react": "^18.2.0"
+  }
+}

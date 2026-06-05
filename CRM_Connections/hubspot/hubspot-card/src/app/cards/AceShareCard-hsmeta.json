@@ -1,0 +1,11 @@
+{
+  "uid": "ace_share_card_v2",
+  "type": "card",
+  "config": {
+    "name": "AWS Partner Central",
+    "description": "Share or refresh a HubSpot deal against AWS Partner Central (ACE) Sandbox.",
+    "entrypoint": "/app/cards/AceShareCard.tsx",
+    "location": "crm.record.tab",
+    "objectTypes": ["DEAL"]
+  }
+}
