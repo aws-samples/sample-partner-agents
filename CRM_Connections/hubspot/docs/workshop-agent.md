@@ -40,8 +40,8 @@ The CRMi mode (Share / Submit / Refresh / Pull lambdas + bidirectional custom pr
 ### 0a. Clone the repo
 
 ```bash
-git clone <REPO-URL> hubspot-crm-pcagent-integration
-cd hubspot-crm-pcagent-integration
+git clone https://github.com/aws-samples/sample-partner-agents.git
+cd sample-partner-agents/CRM_Connections/hubspot
 ```
 
 The workshop facilitator will give you the actual repo URL.
