@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from crm.crm_registry import CrmAdapter, CrmSpec, register
-from orchestrator_agent import SalesforceClient
+from crm.salesforce_client import SalesforceClient
 
 
 @register

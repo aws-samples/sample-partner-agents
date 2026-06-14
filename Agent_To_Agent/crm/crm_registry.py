@@ -199,7 +199,8 @@ def _register_builtin_adapters() -> None:
     # Order here determines the order CRMs appear in the UI dropdown.
     from crm import hubspot_adapter  # noqa: F401
     from crm import salesforce_adapter  # noqa: F401
-    from crm import pipedrive_adapter  # noqa: F401
+    # Pipedrive is not used in the workshop; uncomment to re-enable it in the UI.
+    # from crm import pipedrive_adapter  # noqa: F401
 
 
 _register_builtin_adapters()

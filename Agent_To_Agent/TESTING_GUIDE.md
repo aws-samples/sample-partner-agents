@@ -345,7 +345,7 @@ curl -s -X POST http://localhost:8001/api/generate \
 |---------|--------------|-----|
 | verify_setup.py fails on credentials | AWS creds expired | Run `aws sts get-caller-identity`, refresh creds |
 | verify_setup.py fails on Bedrock | Model not enabled | Enable Claude models in Bedrock console |
-| verify_setup.py fails on Partner Central | Missing IAM permissions | Attach `AWSMcpServiceActionsFullAccess` policy |
+| verify_setup.py fails on Partner Central | Missing IAM permissions | Attach `AWSPartnerCentralSandboxFullAccess` policy |
 | CLI shows "Unknown service: partnercentral-selling" | boto3 too old | `pip install --upgrade boto3 botocore` |
 | API returns 500 error | Check server logs | Look at terminal running `server.py` |
 | MCP approval times out | Network/auth issue | Check AWS credentials, try again |
