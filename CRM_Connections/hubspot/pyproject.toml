@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "HubSpot provisioning CLI for the AWS Partner Central connector"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = {text = "MIT-0"}
 authors = [
     {name = "Contributors"}
 ]
@@ -49,10 +49,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/hubspot-crm-pcagent-integration"
-Documentation = "https://github.com/your-org/hubspot-crm-pcagent-integration#readme"
-Repository = "https://github.com/your-org/hubspot-crm-pcagent-integration.git"
-Issues = "https://github.com/your-org/hubspot-crm-pcagent-integration/issues"
+Homepage = "https://github.com/aws-samples/sample-partner-agents/tree/main/CRM_Connections/hubspot"
+Documentation = "https://github.com/aws-samples/sample-partner-agents/tree/main/CRM_Connections/hubspot#readme"
+Repository = "https://github.com/aws-samples/sample-partner-agents.git"
+Issues = "https://github.com/aws-samples/sample-partner-agents/issues"
 
 [tool.black]
 line-length = 120

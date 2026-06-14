@@ -16,8 +16,8 @@ Thanks for your interest in contributing! This guide will help you get started.
 
 ```bash
 # Clone your fork
-git clone https://github.com/<your-username>/hubspot-crm-pcagent-integration.git
-cd hubspot-aws-pipeline-sync
+git clone https://github.com/<your-username>/sample-partner-agents.git
+cd sample-partner-agents/CRM_Connections/hubspot
 
 # Create a virtual environment
 python -m venv .venv
@@ -65,7 +65,7 @@ The `main` branch is protected:
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/your-org/hubspot-crm-pcagent-integration/issues)
+- Use [GitHub Issues](https://github.com/aws-samples/sample-partner-agents/issues)
 - Include steps to reproduce, expected vs actual behavior
 - For security issues, please email directly instead of opening a public issue
 
@@ -75,4 +75,4 @@ Be respectful and constructive. We're all here to build something useful.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [MIT-0 License](LICENSE).
