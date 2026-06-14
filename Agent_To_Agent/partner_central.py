@@ -398,11 +398,8 @@ class PartnerCentralMCPClient:
             request_payload = mapper.map_opportunity_to_ace(opp, project_title)
             
             logger.info(f"Creating opportunity from Salesforce opportunity {opp.opportunity_id}...")
-            partner_opp_identifier = request_payload.get('PartnerOpportunityIdentifier')
-            masked_partner_opp_identifier = (
-                f"***{str(partner_opp_identifier)[-4:]}" if partner_opp_identifier else "Unknown"
-            )
-            logger.info(f"  PartnerOpportunityIdentifier: {masked_partner_opp_identifier}")
+            has_partner_opp_identifier = bool(request_payload.get('PartnerOpportunityIdentifier'))
+            logger.info("  PartnerOpportunityIdentifier: [REDACTED] (present=%s)", has_partner_opp_identifier)
             logger.info("  TargetCloseDate: [REDACTED]")
             logger.info("📤 CREATE OPPORTUNITY REQUEST prepared (payload redacted)")
             
