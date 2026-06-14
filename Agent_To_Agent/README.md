@@ -67,6 +67,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 │                    ┌─────────────────────┐                                 │
 │                    │  Amazon Bedrock     │                                 │
 │                    │  (Claude AI Model)  │                                 │
+│                    │  via Strands SDK    │                                 │
 │                    │  - Next Steps Gen   │                                 │
 │                    │  - Content Analysis │                                 │
 │                    └──────────┬──────────┘                                 │
@@ -89,7 +90,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 - **CRM Integrations**: HubSpot, Salesforce, Pipedrive
 - **Bi-directional Sync**: Push ACE status back to your CRM (Demo UI supports HubSpot; CLI supports all CRMs)
 - **Slack Integration**: Read messages from channels as context (optional)
-- **AI-Powered Generation**: Use Claude (via Amazon Bedrock) to create actionable next steps
+- **AI-Powered Generation**: Use Claude (via Amazon Bedrock, orchestrated with the Strands Agents SDK) to create actionable next steps
 - **AWS Marketplace Catalog**: Query offers and products
 - **MCP Integration**: Update Partner Central opportunities via the Partner Central Agent
 
@@ -143,12 +144,6 @@ aws iam put-user-policy \
         "Effect": "Allow",
         "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
         "Resource": ["arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:*:*:inference-profile/*"]
-      },
-      {
-        "Sid": "DiscoverClaudeModels",
-        "Effect": "Allow",
-        "Action": ["bedrock:ListFoundationModels", "bedrock:ListInferenceProfiles"],
-        "Resource": "*"
       }
     ]
   }'
@@ -451,7 +446,7 @@ Set `catalog` to `"AWS"` for production or `"Sandbox"` for testing.
 | `SALESFORCE_INSTANCE_URL` | Salesforce instance URL | For Salesforce |
 | `PIPEDRIVE_API_TOKEN` | Pipedrive API token | For Pipedrive |
 | `PIPEDRIVE_INSTANCE_URL` | Pipedrive instance URL | For Pipedrive |
-| `ANTHROPIC_API_KEY` | Anthropic API key (alternative to Bedrock) | Alternative |
+| `BEDROCK_MODEL_ID` | Pin a specific Bedrock Claude model ID; otherwise the first working model from a built-in candidate list is used | Optional |
 
 ### Optional: Demo UI Authentication
 
@@ -497,16 +492,22 @@ python orchestrator_agent.py -o O15081741 -s partner-deals -p "Summarize recent 
 
 ```
 ├── config.json              # Configuration (catalog, endpoints)
-├── orchestrator_agent.py    # Main orchestrator agent (CLI + library)
+├── orchestrator_agent.py    # Orchestrator coordination + CLI (re-exports the modules below)
+├── context_sources.py       # Data models + Slack/file context readers
+├── next_steps.py            # Next-steps generation via the Strands Agents SDK (Bedrock)
+├── partner_central.py       # Partner Central MCP client + Marketplace Catalog client
 ├── server.py                # FastAPI REST server
 ├── demo_ui.py               # Flask web UI for demos
 ├── verify_setup.py          # Setup verification script
 ├── requirements.txt         # Python dependencies
-├── crm/                     # CRM adapters and field mappers
+├── crm/                     # CRM clients, adapters, and field mappers
+│   ├── hubspot_client.py    # HubSpot REST client
 │   ├── hubspot_adapter.py
 │   ├── hubspot_mapper.py
+│   ├── salesforce_client.py # Salesforce REST client
 │   ├── salesforce_adapter.py
 │   ├── salesforce_mapper.py
+│   ├── pipedrive_client.py  # Pipedrive REST client
 │   ├── pipedrive_adapter.py
 │   ├── pipedrive_mapper.py
 │   └── crm_registry.py
@@ -522,7 +523,7 @@ python orchestrator_agent.py -o O15081741 -s partner-deals -p "Summarize recent 
 ### Update Next Steps Flow
 1. **Context Gathering**: Agent reads from specified sources (Slack, files, folders)
 2. **Opportunity Fetch**: Gets current opportunity data from Partner Central
-3. **AI Generation**: Claude analyzes context and generates actionable next steps
+3. **AI Generation**: Claude (via the Strands Agents SDK on Amazon Bedrock) analyzes context and generates actionable next steps
 4. **MCP Update**: Sends update request to Partner Central MCP Agent
 5. **Approval Flow**: PC Agent requests human approval before writing
 6. **Execution**: PC Agent calls Partner Central API to set NextSteps field

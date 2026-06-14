@@ -58,16 +58,15 @@ def check_aws_credentials():
 
 
 def check_bedrock_model_access(model_override: str = None):
-    """Verify Bedrock model access.
+    """Verify Bedrock model access via the Strands-backed generator.
 
-    Uses the same dynamic discovery as orchestrator_agent.NextStepsGenerator:
-    list inference profiles + foundation models for Anthropic, rank them
-    (Haiku first, newest first, profiles preferred), and probe with a tiny
-    converse() call. Stops at the first success and reports it.
+    Drives orchestrator_agent.NextStepsGenerator (now built on the Strands
+    Agents SDK) with a tiny prompt. The generator walks its candidate model
+    list and caches the first model that responds, so a success here confirms
+    the same model the orchestrator will use at runtime.
 
-    An explicit --model override or BEDROCK_MODEL_ID skips discovery and tests
-    that ID directly. If the dynamic path fails, we still report what *was*
-    discoverable so the user can pick one manually.
+    An explicit --model override or BEDROCK_MODEL_ID pins a single model and
+    skips the candidate walk.
     """
     print_section("2. Amazon Bedrock Model Access")
 
@@ -86,54 +85,38 @@ def check_bedrock_model_access(model_override: str = None):
     region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION') or 'us-east-1'
     gen = NextStepsGenerator(use_bedrock=True)
 
-    # Honor --model: pin the override on the generator so the resolver short-circuits.
+    # Honor --model: pin the override so the candidate walk short-circuits.
     if model_override:
         gen._pinned_bedrock_model_id = model_override
 
-    resolved = gen._resolve_bedrock_model()
-    if resolved:
-        # Verify with a real prompt so we get a response string to display.
-        try:
-            response = gen.bedrock_client.converse(
-                modelId=resolved,
-                messages=[{"role": "user", "content": [{"text": "Say 'Bedrock access verified' in exactly those words."}]}],
-                inferenceConfig={"maxTokens": 50},
-            )
-            output = response['output']['message']['content'][0]['text']
-            print_status(f"Bedrock model access ({resolved})", True)
-            print(f"   └─ Region: {region}")
-            print(f"   └─ Response: {output[:50]}...")
-            print(f"   └─ orchestrator_agent.py auto-discovers this model at runtime — "
-                  f"no BEDROCK_MODEL_ID required.")
-            return True
-        except Exception as e:
-            print_status("Bedrock model access", False, str(e)[:200])
-            return False
-
-    # Discovery failed. Tell the user what *is* discoverable in this region.
-    print_status("Bedrock model access", False,
-                 "No usable Anthropic Claude model discovered")
-    print(
-        "\n   The legacy 'Model access' console page has been retired. "
-        "Anthropic models are auto-enabled when you first invoke them in a "
-        "commercial region — but first-time Anthropic users may need to "
-        "submit use-case details one time before access is granted."
-    )
-    print("   Steps to follow:")
-    print("   1. Go to the Bedrock console → Model catalog (region above)")
-    print("   2. Open an Anthropic Claude model → 'Open in playground' OR run InvokeModel/Converse once")
-    print("   3. If prompted, fill out the one-time use-case form")
-    print("   4. Re-run this script")
-    print("   IAM controls access too — confirm bedrock:InvokeModel + InvokeModelWithResponseStream "
-          "are allowed for the Claude ARNs (foundation-model/* and inference-profile/*).")
-
-    candidates = gen._discover_anthropic_models()
-    if candidates:
-        print(f"\n   Anthropic models discoverable in {region}:")
-        for mid in candidates[:10]:
-            print(f"     - {mid}")
-        print("\n   Tip: pass --model <id> or set BEDROCK_MODEL_ID to skip auto-discovery.")
-    return False
+    try:
+        # _invoke runs the prompt through Strands, trying candidate models in
+        # order and caching the first that works.
+        response = gen._invoke("Say 'Bedrock access verified' in exactly those words.")
+        resolved = gen.bedrock_model_id
+        print_status(f"Bedrock model access ({resolved})", True)
+        print(f"   └─ Region: {region}")
+        print(f"   └─ Response: {response[:50]}...")
+        print(f"   └─ orchestrator_agent.py picks this model at runtime via the "
+              f"Strands Agents SDK — no BEDROCK_MODEL_ID required.")
+        return True
+    except Exception as e:
+        print_status("Bedrock model access", False, str(e)[:200])
+        print(
+            "\n   The legacy 'Model access' console page has been retired. "
+            "Anthropic models are auto-enabled when you first invoke them in a "
+            "commercial region — but first-time Anthropic users may need to "
+            "submit use-case details one time before access is granted."
+        )
+        print("   Steps to follow:")
+        print("   1. Go to the Bedrock console → Model catalog (region above)")
+        print("   2. Open an Anthropic Claude model → 'Open in playground' OR run InvokeModel/Converse once")
+        print("   3. If prompted, fill out the one-time use-case form")
+        print("   4. Re-run this script")
+        print("   IAM controls access too — confirm bedrock:InvokeModel + InvokeModelWithResponseStream "
+              "are allowed for the Claude ARNs (foundation-model/* and inference-profile/*).")
+        print("\n   Tip: pass --model <id> or set BEDROCK_MODEL_ID to pin a specific model.")
+        return False
 
 
 def check_partner_central_api(catalog: str):
