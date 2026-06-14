@@ -403,7 +403,7 @@ class PartnerCentralMCPClient:
                 f"***{str(partner_opp_identifier)[-4:]}" if partner_opp_identifier else "Unknown"
             )
             logger.info(f"  PartnerOpportunityIdentifier: {masked_partner_opp_identifier}")
-            logger.info(f"  TargetCloseDate: {request_payload.get('LifeCycle', {}).get('TargetCloseDate')}")
+            logger.info("  TargetCloseDate: [REDACTED]")
             logger.info("📤 CREATE OPPORTUNITY REQUEST prepared (payload redacted)")
             
             response = self.pc_client.create_opportunity(**request_payload)
