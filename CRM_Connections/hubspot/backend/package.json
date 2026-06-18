@@ -17,7 +17,7 @@
     "@aws-sdk/client-partnercentral-selling": "^3.600.0",
     "@aws-sdk/client-secrets-manager": "^3.600.0",
     "@hubspot/api-client": "^11.0.0",
-    "uuid": "^9.0.0"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.140",
