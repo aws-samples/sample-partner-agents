@@ -1841,10 +1841,75 @@ async function reconcileRelatedEntities(
 }
 
 /**
+ * Build a human-readable message from an AWS Partner Central SDK error.
+ *
+ * Partner Central `ValidationException`s carry the actionable detail in a
+ * structured `ErrorList` (each entry: `FieldName`, `Code`, `Message`) and/or
+ * a `Reason` field — NOT in the top-level `.message`, which is frequently the
+ * unhelpful literal `"UnknownError"` for validation failures. Prefer the
+ * structured field-level detail, then `Reason`, then a meaningful `.message`,
+ * then the exception name as a last resort.
+ *
+ * Example output:
+ *   "ValidationException: ExpectedCustomerSpend.CurrencyCode: ESC cloud
+ *    partition requires EUR currency [INVALID_VALUE]"
+ */
+export function formatAceError(err: unknown): string {
+  if (err === null || typeof err !== "object") {
+    return typeof err === "string" && err.length > 0 ? err : "unknown error";
+  }
+  const e = err as {
+    name?: string;
+    message?: string;
+    Reason?: string;
+    ErrorList?: Array<{
+      FieldName?: string;
+      Code?: string;
+      Message?: string;
+    }>;
+  };
+  const name = typeof e.name === "string" ? e.name : "";
+  const namePrefix = name && name !== "UnknownError" ? `${name}: ` : "";
+
+  // 1. Field-level detail from ErrorList (the most actionable).
+  if (Array.isArray(e.ErrorList) && e.ErrorList.length > 0) {
+    const parts: string[] = [];
+    for (const item of e.ErrorList) {
+      if (item === null || typeof item !== "object") continue;
+      const field = item.FieldName?.trim();
+      const m = item.Message?.trim();
+      const codeRaw = item.Code?.trim();
+      const head = [field, m].filter((s) => s && s.length > 0).join(": ");
+      const seg = codeRaw ? `${head} [${codeRaw}]`.trim() : head;
+      if (seg && seg !== "[]") parts.push(seg);
+    }
+    if (parts.length > 0) return `${namePrefix}${parts.join("; ")}`;
+  }
+
+  // 2. Reason string.
+  if (typeof e.Reason === "string" && e.Reason.trim().length > 0) {
+    return `${namePrefix}${e.Reason.trim()}`;
+  }
+
+  // 3. A meaningful top-level message (skip the "UnknownError" noise).
+  if (
+    typeof e.message === "string" &&
+    e.message.trim().length > 0 &&
+    e.message.trim() !== "UnknownError"
+  ) {
+    return e.message.trim();
+  }
+
+  // 4. Last resort: at least name the exception type.
+  return name.length > 0 ? name : "unknown error";
+}
+
+/**
  * Shared error-handling tail for any ACE failure: promote
- * `ACEThrottledError` to `ACE_THROTTLED`, attempt to write a `Sync Error`
- * status back to HubSpot (swallowing secondary failures), and return a
- * fully-formed `ErrorResponse`.
+ * `ACEThrottledError` to `ACE_THROTTLED`, surface the structured AWS error
+ * detail via `formatAceError`, log it for operators, attempt to write a
+ * `Sync Error` status back to HubSpot (swallowing secondary failures), and
+ * return a fully-formed `ErrorResponse`.
  */
 async function aceFailure(
   step: string,
@@ -1855,8 +1920,37 @@ async function aceFailure(
 ): Promise<ErrorResponse> {
   const isThrottled = err instanceof ACEThrottledError;
   const outCode = isThrottled ? ErrorCode.ACE_THROTTLED : code;
-  const msg =
-    err instanceof Error && err.message ? err.message : "unknown error";
+  const msg = formatAceError(err);
+  // Log the structured AWS error to CloudWatch so operators can see the
+  // real cause (field-level ErrorList, Reason, $metadata) — not just the
+  // collapsed envelope. Best-effort; never throws.
+  try {
+    const e = err as {
+      name?: string;
+      message?: string;
+      Reason?: string;
+      $fault?: unknown;
+      $metadata?: unknown;
+      ErrorList?: unknown;
+    };
+    console.error(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: "error",
+        fn: "share",
+        event: `share.step.${step}.error`,
+        dealId,
+        errName: e?.name,
+        errReason: e?.Reason,
+        errList: e?.ErrorList,
+        errFault: e?.$fault,
+        errMetadata: e?.$metadata,
+        formatted: msg,
+      })
+    );
+  } catch {
+    // ignore logging failures
+  }
   try {
     await hs.writeDealProperties(dealId, {
       ace_sync_status: "Sync Error",
