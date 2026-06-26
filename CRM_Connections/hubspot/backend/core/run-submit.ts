@@ -50,7 +50,7 @@ import { randomUUID } from "node:crypto";
 import { ACE_CATALOG } from "../lib/config";
 import type { AppConfig } from "../lib/config";
 import { generateEngagementClientToken } from "../lib/client-token";
-import { ACEThrottledError } from "../lib/ace";
+import { ACEThrottledError, describeAceError } from "../lib/ace";
 import type { AceClient } from "../lib/ace";
 import type { HubspotClient } from "../lib/hubspot";
 import { ErrorCode, makeError } from "../lib/errors";
@@ -81,6 +81,16 @@ const SUBMIT_DEAL_PROPERTY_NAMES = [
   "ace_opportunity_id",
   "ace_involvement_type",
   "ace_visibility",
+  // The remaining three Submission_Required_Fields. Without these in the
+  // read list, missingSubmissionFields() always sees them as undefined and
+  // blocks Submit even when they are set on the deal.
+  "ace_delivery_model",
+  "ace_primary_need_from_aws",
+  "ace_customer_use_case",
+  // SalesActivities: a Project field, but AWS enforces it at Submit time
+  // (engagement-task validation). Required in the read list for the same
+  // reason as above.
+  "ace_sales_activities",
   "aws_review_status",
   "ace_sync_status",
   "ace_last_sync",
@@ -119,6 +129,52 @@ type AceTaskSummary = {
 /** Current time as an ISO-8601 UTC string — format expected by `ace_last_sync`. */
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * StartEngagementFromOpportunityTask is asynchronous: it returns a task
+ * token immediately and AWS validates the submission a beat later. If
+ * validation fails (e.g. a required Project field such as SalesActivities
+ * is missing) the task transitions to FAILED and the opportunity stays at
+ * `Pending Submission` — but the StartEngagement call itself did NOT throw,
+ * so without this check `runSubmit` would report a false success and the
+ * partner would see "submitted" while nothing happened.
+ *
+ * This is called AFTER `fetchAceSnapshot` (two AWS round-trips), which
+ * gives AWS enough time to run validation, so a single list call reliably
+ * observes the terminal state. Returns the FAILED task summary when the
+ * most-recent task (started at/after `sinceMs`) failed; `undefined`
+ * otherwise (completed, still in progress, or unreadable — none of which
+ * should block the optimistic success path).
+ */
+async function latestFailedEngagementTask(
+  ace: AceClient,
+  oppId: string,
+  sinceMs: number
+): Promise<AceTaskSummary | undefined> {
+  let task: AceTaskSummary | undefined;
+  try {
+    const listResp = await ace.listEngagementFromOpportunityTasks({
+      Catalog: ACE_CATALOG,
+      OpportunityIdentifier: [oppId],
+    } as never);
+    task = pickMostRecentTask(
+      (listResp as { TaskSummaries?: AceTaskSummary[] }).TaskSummaries
+    );
+  } catch {
+    return undefined;
+  }
+  if (!task || task.TaskStatus !== "FAILED") return undefined;
+  // Guard against reading a stale prior task: only treat it as ours when
+  // it started at/after our StartEngagement call (small skew tolerance).
+  const startMs =
+    task.StartTime instanceof Date
+      ? task.StartTime.getTime()
+      : typeof task.StartTime === "string"
+        ? Date.parse(task.StartTime)
+        : NaN;
+  if (Number.isFinite(startMs) && startMs < sinceMs - 5000) return undefined;
+  return task;
 }
 
 /**
@@ -269,6 +325,7 @@ export async function runSubmit(
       ? randomUUID()
       : generateEngagementClientToken(dealId);
 
+  const engagementStartMs = Date.now();
   try {
     await ace.startEngagementFromOpportunityTask({
       Catalog: ACE_CATALOG,
@@ -283,8 +340,22 @@ export async function runSubmit(
     // Submit click after fixing the underlying issue (typically an
     // AWS-rejected involvement type / visibility / solution permission).
     const isThrottled = err instanceof ACEThrottledError;
-    const msg =
-      err instanceof Error && err.message ? err.message : "unknown error";
+    const msg = describeAceError(err);
+    // Structured failure log so submit-time AWS rejections are visible in
+    // CloudWatch Logs / countable via a metric filter — previously this
+    // path only wrote `ace_sync_error` to the deal with no server trace.
+    console.error(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: "error",
+        fn: "submit",
+        event: "submit.step.start_engagement.fail",
+        dealId,
+        code: isThrottled ? ErrorCode.ACE_THROTTLED : ErrorCode.ACE_CREATE,
+        message: msg,
+        ...(err instanceof Error && err.name ? { errorType: err.name } : {}),
+      })
+    );
     try {
       await hs.writeDealProperties(dealId, {
         ace_sync_status: "Sync Error",
@@ -302,9 +373,54 @@ export async function runSubmit(
     );
   }
 
-  // 7. Read back the post-engagement state and write the full snapshot
-  //    plus the success-state health flags. R4.5 / R4.6.
+  // 6b. Detect ASYNC validation failure. StartEngagement returned a token
+  //     without throwing, but AWS validates the submission a beat later.
+  //     Read the post-engagement snapshot first (two AWS round-trips give
+  //     AWS time to validate), then check whether the task we just started
+  //     landed on FAILED. If so the opp stays at Pending Submission and we
+  //     must surface the AWS reason instead of a false success.
   const snapshot = await fetchAceSnapshot(ace, oppId);
+  const failedTask = await latestFailedEngagementTask(
+    ace,
+    oppId,
+    engagementStartMs
+  );
+  if (failedTask) {
+    const reason = failedTask.ReasonCode ? `${failedTask.ReasonCode}: ` : "";
+    const detail =
+      (failedTask.Message ?? "").trim() || "AWS rejected the submission.";
+    const msg = `${reason}${detail}`;
+    console.error(
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: "error",
+        fn: "submit",
+        event: "submit.step.engagement_task.failed",
+        dealId,
+        oppId,
+        code: ErrorCode.ACE_CREATE,
+        reasonCode: failedTask.ReasonCode,
+        message: detail,
+      })
+    );
+    try {
+      await hs.writeDealProperties(dealId, {
+        ace_sync_status: "Sync Error",
+        ace_sync_error: `StartEngagement: ${msg}`,
+        ace_last_sync: nowIso(),
+      });
+    } catch {
+      // Swallow — primary error is in the response envelope.
+    }
+    return makeError(
+      ErrorCode.ACE_CREATE,
+      "StartEngagement",
+      `Submit failed: ${msg}`
+    );
+  }
+
+  // 7. Write the full snapshot plus the success-state health flags.
+  //    R4.5 / R4.6.
   const finalTs = nowIso();
   const finalProps = {
     ...snapshotToProps(snapshot, deal),

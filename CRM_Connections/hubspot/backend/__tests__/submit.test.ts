@@ -2,6 +2,7 @@ import { describe, test, expect, vi } from "vitest";
 
 import { runSubmit } from "../core/run-submit";
 import { generateEngagementClientToken } from "../lib/client-token";
+import { SUBMISSION_REQUIRED_FIELDS } from "../lib/submission-mode";
 import type { AceClient } from "../lib/ace";
 import type { HubspotClient } from "../lib/hubspot";
 import type { AppConfig } from "../lib/config";
@@ -47,8 +48,14 @@ function makeValidDeal(overrides: Partial<DealProps> = {}): DealProps {
     dealname: "Acme Migration",
     contract_term__months_: "12",
     ace_opportunity_id: "O-EXISTING-1",
+    // All five Submission_Required_Fields populated by default so the
+    // submission-field precondition passes unless a test overrides one.
     ace_involvement_type: "Co-Sell",
     ace_visibility: "Full",
+    ace_delivery_model: "SaaS or PaaS",
+    ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+    ace_customer_use_case: "Business Applications & Contact Center",
+    ace_sales_activities: "Initialized discussions with customer",
     aws_review_status: "",
     ace_sync_status: "Synced",
     ace_last_sync: "",
@@ -126,6 +133,29 @@ function expectNoAwsCalls(mocks: AceMocks): void {
 }
 
 describe("runSubmit — preconditions (R4.1, R4.2, R6.4)", () => {
+  test("0. requests every Submission_Required_Field from HubSpot (regression)", async () => {
+    // Guards against read-list / required-list drift: the submit handler
+    // must request all SUBMISSION_REQUIRED_FIELDS, otherwise they read back
+    // undefined and Submit wrongly reports them missing even when set on
+    // the deal (the ace_delivery_model / ace_primary_need_from_aws /
+    // ace_customer_use_case regression).
+    const deal = makeValidDeal();
+    const ace = buildAce();
+    const hs = buildHs(deal);
+
+    await runSubmit(42, {
+      config: BASE_CONFIG,
+      ace: ace.client,
+      hs: hs.client,
+    });
+
+    expect(hs.mocks.readDealProperties).toHaveBeenCalledTimes(1);
+    const requested = hs.mocks.readDealProperties.mock.calls[0][1] as string[];
+    for (const field of SUBMISSION_REQUIRED_FIELDS) {
+      expect(requested).toContain(field);
+    }
+  });
+
   test("1. missing ace_opportunity_id → PRECONDITION, no AWS calls", async () => {
     // R4.1: an empty ace_opportunity_id is the explicit "Share first"
     // signal. Submit must refuse before touching AWS so the partner
@@ -424,6 +454,51 @@ describe("runSubmit — failure handling (Property 3, R8.1, R8.2, R8.5)", () => 
     expect(writeCall[1].ace_sync_error).toContain("Visibility invalid");
     expect(typeof writeCall[1].ace_last_sync).toBe("string");
     expect(writeCall[1].ace_last_sync.length).toBeGreaterThan(0);
+  });
+
+  test("12. StartEngagement succeeds but the task FAILS async → ACE_CREATE with the AWS reason, Sync Error written (no false success)", async () => {
+    // The real-world salesActivities regression: StartEngagement returns a
+    // token without throwing, then AWS validation fails the task a beat
+    // later. runSubmit must surface the AWS reason instead of reporting a
+    // false success and leaving the opp stuck at Pending Submission.
+    const deal = makeValidDeal({ aws_review_status: "Pending Submission" });
+    const list = vi
+      .fn()
+      // Step 5 pre-check: no prior task → deterministic token path.
+      .mockResolvedValueOnce({ TaskSummaries: [] })
+      // Post-engagement check: the task we just started landed on FAILED.
+      .mockResolvedValue({
+        TaskSummaries: [
+          {
+            TaskStatus: "FAILED",
+            StartTime: new Date(),
+            ReasonCode: "OPPORTUNITY_VALIDATION_FAILED",
+            Message:
+              "ACTION_NOT_PERMITTED project.salesActivities: project.salesActivities is required",
+          },
+        ],
+      });
+    const ace = buildAce({ listEngagementFromOpportunityTasks: list });
+    const hs = buildHs(deal);
+
+    const resp = await runSubmit(42, {
+      config: BASE_CONFIG,
+      ace: ace.client,
+      hs: hs.client,
+    });
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.code).toBe("ACE_CREATE");
+      expect(resp.details?.step).toBe("StartEngagement");
+      expect(resp.message).toContain("salesActivities");
+    }
+    expect(
+      ace.mocks.startEngagementFromOpportunityTask
+    ).toHaveBeenCalledTimes(1);
+    const writeCall = hs.mocks.writeDealProperties.mock.calls[0];
+    expect(writeCall[1].ace_sync_status).toBe("Sync Error");
+    expect(writeCall[1].ace_sync_error).toContain("salesActivities");
   });
 });
 

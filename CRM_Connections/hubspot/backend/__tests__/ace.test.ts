@@ -8,7 +8,7 @@ import type {
 } from "@aws-sdk/client-partnercentral-selling";
 import { ListEngagementFromOpportunityTasksCommand } from "@aws-sdk/client-partnercentral-selling";
 
-import { createAceClient, ACEThrottledError } from "../lib/ace";
+import { createAceClient, ACEThrottledError, describeAceError } from "../lib/ace";
 import { ACE_CATALOG, type AppConfig } from "../lib/config";
 
 /**
@@ -259,5 +259,67 @@ describe("ace.ts listEngagementFromOpportunityTasks", () => {
       Catalog: "Sandbox",
       OpportunityIdentifier: ["O-789"],
     });
+  });
+});
+
+describe("describeAceError — verbose AWS error formatting", () => {
+  test("folds ErrorList field detail when top-level message is the SDK 'UnknownError'", () => {
+    // The real ESC/currency rejection: empty top-level message (SDK fills
+    // 'UnknownError'), actionable detail in ErrorList.
+    const err = Object.assign(new Error("UnknownError"), {
+      name: "ValidationException",
+      ErrorList: [
+        {
+          FieldName: "ExpectedCustomerSpend.CurrencyCode",
+          Message: "ESC cloud partition requires EUR currency",
+          Code: "INVALID_VALUE",
+        },
+      ],
+    });
+    expect(describeAceError(err)).toBe(
+      "ExpectedCustomerSpend.CurrencyCode: ESC cloud partition requires EUR currency (INVALID_VALUE)"
+    );
+  });
+
+  test("joins multiple ErrorList entries", () => {
+    const err = Object.assign(new Error("UnknownError"), {
+      name: "ValidationException",
+      ErrorList: [
+        { FieldName: "a.b", Message: "first", Code: "X" },
+        { FieldName: "c.d", Message: "second", Code: "Y" },
+      ],
+    });
+    expect(describeAceError(err)).toBe("a.b: first (X); c.d: second (Y)");
+  });
+
+  test("keeps a useful top-level message and appends field detail", () => {
+    const err = Object.assign(new Error("Request failed"), {
+      name: "ValidationException",
+      ErrorList: [{ FieldName: "x", Message: "bad", Code: "INVALID_VALUE" }],
+    });
+    expect(describeAceError(err)).toBe(
+      "Request failed — x: bad (INVALID_VALUE)"
+    );
+  });
+
+  test("falls back to the plain message when there is no ErrorList", () => {
+    const err = Object.assign(new Error("Stage is not editable"), {
+      name: "ValidationException",
+    });
+    expect(describeAceError(err)).toBe("Stage is not editable");
+  });
+
+  test("never returns empty — uses name when message is the unhelpful 'UnknownError' and no detail", () => {
+    const err = Object.assign(new Error("UnknownError"), {
+      name: "ValidationException",
+    });
+    // No ErrorList, no Reason → last resort returns the raw message.
+    expect(describeAceError(err)).toBe("UnknownError");
+  });
+
+  test("handles non-Error inputs", () => {
+    expect(describeAceError("boom")).toBe("boom");
+    expect(describeAceError(undefined)).toBe("unknown error");
+    expect(describeAceError(null)).toBe("unknown error");
   });
 });

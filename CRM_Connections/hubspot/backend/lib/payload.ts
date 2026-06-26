@@ -44,6 +44,7 @@ import type { AceStage, StageMapping } from "./stage-mapping";
 import { forwardMap } from "./stage-mapping";
 import { generateClientToken } from "./client-token";
 import type { CompanyProps, DealProps } from "./preconditions";
+import { normalizeCountryCode } from "./country";
 
 /**
  * Generic precedence resolver for an ACE-payload override:
@@ -223,14 +224,14 @@ function translateMarketingSource(value: string): string {
 function resolveMarketingSource(
   deal: DealProps,
   config: AcePayloadConfig | Record<string, never>
-): string {
-  const raw = resolveOverride(
+): string | undefined {
+  const raw = resolveOptionalOverride(
     deal,
     "ace_marketing_source",
     config,
-    "aceDefaultMarketingSource",
-    DEFAULT_MARKETING_SOURCE
+    "aceDefaultMarketingSource"
   );
+  if (!raw) return undefined;
   return translateMarketingSource(raw);
 }
 
@@ -249,32 +250,36 @@ function buildMarketing(
   deal: DealProps,
   config: AcePayloadConfig | Record<string, never>
 ):
-  | { Source: string }
   | {
       Source: string;
-      AwsFundingUsed: string;
+      AwsFundingUsed?: string;
       CampaignName?: string;
       UseCases?: string[];
       Channels?: string[];
-    } {
+    }
+  | undefined {
   const source = resolveMarketingSource(deal, config);
+  // No marketing source set by the rep → omit Marketing entirely (no
+  // "None" default).
+  if (!source) return undefined;
   if (source === "None") {
     return { Source: source };
   }
-  const fundingUsed = resolveOverride(
-    deal,
-    "ace_aws_funding_used",
-    config,
-    "aceDefaultAwsFundingUsed",
-    DEFAULT_ACE_AWS_FUNDING_USED
-  );
   const out: {
     Source: string;
-    AwsFundingUsed: string;
+    AwsFundingUsed?: string;
     CampaignName?: string;
     UseCases?: string[];
     Channels?: string[];
-  } = { Source: source, AwsFundingUsed: fundingUsed };
+  } = { Source: source };
+  // AwsFundingUsed only when the rep set it (no "No" default).
+  const fundingUsed = resolveOptionalOverride(
+    deal,
+    "ace_aws_funding_used",
+    config,
+    "aceDefaultAwsFundingUsed"
+  );
+  if (fundingUsed) out.AwsFundingUsed = fundingUsed;
 
   // Optional Marketing.* sub-fields. Only attached when set on the
   // deal so we don't trip ACE's `INVALID_ENUM_VALUE` / empty-array
@@ -454,12 +459,14 @@ function buildCustomerAccount(
   deal: DealProps,
   config: AcePayloadConfig | Record<string, never>
 ): Record<string, unknown> {
-  const industry = resolveOverride(
+  // Industry is AWS-required (enforced by the `industry` precondition);
+  // sourced from the deal's ace_industry (or env). No "Software and
+  // Internet" default.
+  const industry = resolveOptionalOverride(
     deal,
     "ace_industry",
     config,
-    "aceDefaultIndustry",
-    DEFAULT_ACE_INDUSTRY
+    "aceDefaultIndustry"
   );
 
   // Source order for customer-info fields: deal-level override first
@@ -473,8 +480,8 @@ function buildCustomerAccount(
     deal.ace_company_name?.trim() || company?.name?.trim() || "";
   const account: Record<string, unknown> = {
     CompanyName: companyName,
-    Industry: industry,
   };
+  if (industry) account.Industry = industry;
 
   // Per-deal overrides for the regex-validated identifiers. Both must
   // be omitted entirely when blank — ACE rejects empty strings with
@@ -489,10 +496,16 @@ function buildCustomerAccount(
   }
 
   const address: Record<string, string> = {};
-  const cc =
+  // Normalise the country to an ISO 3166-1 alpha-2 code (e.g. "United
+  // States" -> "US") so AWS accepts it. Fall back to the raw value when
+  // it can't be resolved — the create-path precondition already blocks
+  // unresolvable countries, and AWS returns a clear `INVALID_ENUM_VALUE`
+  // for anything that slips through (e.g. the update path).
+  const rawCc =
     deal.ace_country_code?.trim() ||
     company?.hs_country_code?.trim() ||
     "";
+  const cc = normalizeCountryCode(rawCc) ?? rawCc;
   if (cc) address.CountryCode = cc;
   const city = deal.ace_city?.trim() || company?.city?.trim() || "";
   if (city) address.City = city;
@@ -661,11 +674,10 @@ export type CreatePayload = {
   Customer: { Account: Record<string, unknown> };
   Project: Record<string, unknown>;
   LifeCycle: Record<string, unknown>;
-  OpportunityType: string;
-  Origin: "Partner Referral";
-  Marketing: { Source: string; AwsFundingUsed?: string };
-  PrimaryNeedsFromAws: string[];
-  NationalSecurity: string;
+  OpportunityType?: string;
+  Marketing?: { Source: string; AwsFundingUsed?: string };
+  PrimaryNeedsFromAws?: string[];
+  NationalSecurity?: string;
   /**
    * Partner-side identifier for the opportunity. We use the HubSpot
    * deal ID stringified. This field is REQUIRED for ACE to populate
@@ -697,11 +709,10 @@ export type UpdatePayload = {
   LifeCycle: Record<string, unknown>;
   Project: Record<string, unknown>;
   Customer: { Account: Record<string, unknown> };
-  OpportunityType: string;
-  Origin: string;
-  Marketing: { Source: string; AwsFundingUsed?: string };
-  PrimaryNeedsFromAws: string[];
-  NationalSecurity: string;
+  OpportunityType?: string;
+  Marketing?: { Source: string; AwsFundingUsed?: string };
+  PrimaryNeedsFromAws?: string[];
+  NationalSecurity?: string;
   PartnerOpportunityIdentifier: string;
   /**
    * Optional SoftwareRevenue passthrough. Present only when the opp
@@ -726,74 +737,77 @@ export function buildCreatePayload(
   dealId: number,
   deal: DealProps,
   company: CompanyProps,
+  stageMapping: StageMapping,
   config: AcePayloadConfig | Record<string, never>
 ): CreatePayload {
   const monthly = computeMonthlyAmount(deal.amount, deal.contract_term__months_);
-  // Title: HubSpot's built-in `dealname` is the single source of
-  // truth for `Project.Title`. Refresh writes AWS's title back to
-  // the SAME `dealname` field; last-writer-wins. Fall back to the
-  // hardcoded default ("Partner Opportunity") only when the deal
-  // has no name at all — the create-path precondition validator
-  // doesn't enforce a non-empty `dealname`, but the payload still
-  // needs a value because ACE rejects blank titles.
-  const title = deal.dealname?.trim() || DEFAULT_PROJECT_TITLE;
+  // Title comes solely from the deal name (enforced by the `dealName`
+  // precondition — no canned "Partner Opportunity" default).
+  const title = deal.dealname?.trim() ?? "";
   const closeDate = parseCloseDate(deal.closedate);
 
-  // CustomerUseCase precedence: per-deal property → env-level default →
-  // hard-coded fallback. ACE rejects values not in its enum (see
-  // `DEFAULT_ACE_USE_CASE` for the chosen safe default).
-  const customerUseCase = resolveOverride(
-    deal,
-    "ace_customer_use_case",
-    config,
-    "aceDefaultUseCase",
-    DEFAULT_ACE_USE_CASE
-  );
+  // Create stage reflects the deal's OWN mapped stage (the
+  // `stageMappable` precondition guarantees it maps) — no hard-coded
+  // "Qualified". Defensive throw mirrors buildUpdatePayload.
+  const mappedStage = deal.dealstage
+    ? forwardMap(deal.dealstage.trim(), stageMapping)
+    : undefined;
+  if (!mappedStage) {
+    throw new Error(
+      `Cannot build create payload: dealstage "${deal.dealstage ?? ""}" does not map to an ACE stage`
+    );
+  }
 
-  const deliveryModels = resolveMultiOverride(
-    deal,
-    "ace_delivery_model",
-    config,
-    "aceDefaultDeliveryModel",
-    [DEFAULT_ACE_DELIVERY_MODEL]
-  );
-  const currencyCode = resolveOverride(
+  // Currency is required by AWS (ExpectedCustomerSpend.CurrencyCode) and
+  // enforced by the `currencyCode` precondition; sourced from the deal
+  // (or env). No "USD" default.
+  const currencyCode = resolveOptionalOverride(
     deal,
     "ace_currency_code",
     config,
-    "aceDefaultCurrencyCode",
-    DEFAULT_ACE_CURRENCY_CODE
+    "aceDefaultCurrencyCode"
   );
 
   const project: Record<string, unknown> = {
     Title: title,
     CustomerBusinessProblem: deal.description ?? "",
-    DeliveryModels: deliveryModels,
-    CustomerUseCase: customerUseCase,
     ExpectedCustomerSpend: [
       {
         Amount: monthly,
-        CurrencyCode: currencyCode,
+        ...(currencyCode ? { CurrencyCode: currencyCode } : {}),
+        // Frequency is structural: the amount is computed as a MONTHLY
+        // figure (total / contract months), so the unit is fixed.
         Frequency: "Monthly",
-        // Same fallback chain as the update path — see resolveTargetCompany.
         TargetCompany: resolveTargetCompany(company, deal),
       },
     ],
-    // SalesActivities precedence: per-deal `ace_sales_activities`
-    // multi-select > stage-default cumulative array. ACE accepts a
-    // closed enum of 8 values; passing values outside the enum
-    // surfaces as `INVALID_ENUM_VALUE` at submit time.
-    SalesActivities: resolveMultiOverride(
-      deal,
-      "ace_sales_activities",
-      config,
-      "aceDefaultSalesActivities",
-      [
-        "Initialized discussions with customer",
-        "Customer has shown interest in solution",
-      ]
-    ),
   };
+  // DeliveryModels + CustomerUseCase are submit-required (gated via
+  // SUBMISSION_REQUIRED_FIELDS) so they're present when submitting; for a
+  // draft they may be absent — omit rather than send a default.
+  const deliveryModels = resolveOptionalMultiOverride(
+    deal,
+    "ace_delivery_model",
+    config,
+    "aceDefaultDeliveryModel"
+  );
+  if (deliveryModels) project.DeliveryModels = deliveryModels;
+  const customerUseCase = resolveOptionalOverride(
+    deal,
+    "ace_customer_use_case",
+    config,
+    "aceDefaultUseCase"
+  );
+  if (customerUseCase) project.CustomerUseCase = customerUseCase;
+  // SalesActivities is optional at AWS — omit when blank (no canned
+  // "Initialized discussions…" default).
+  const salesActivities = resolveOptionalMultiOverride(
+    deal,
+    "ace_sales_activities",
+    config,
+    "aceDefaultSalesActivities"
+  );
+  if (salesActivities) project.SalesActivities = salesActivities;
 
   // Attach the additional editable Project fields (CompetitorName,
   // ApnPrograms, AwsPartition, OtherCompetitorNames,
@@ -801,59 +815,56 @@ export function buildCreatePayload(
   // when blank — ACE rejects empty strings on the enum-validated ones.
   attachEditableProjectFields(project, deal, config);
 
-  // NextSteps: HubSpot's built-in `hs_next_step` is the single
-  // source of truth. Share reads it; Refresh writes the AWS value
-  // back to the same field. When the operator hasn't set it, fall
-  // back to the stage-default canned string keyed off the create
-  // stage.
+  // NextSteps maps to hs_next_step; AWS does not require it, so omit when
+  // blank (no canned per-stage default).
   const nextStepsOverride = deal["hs_next_step"]?.trim();
-  const lifeCycle: Record<string, unknown> = {
-    Stage: CREATE_STAGE,
-    NextSteps:
-      nextStepsOverride && nextStepsOverride.length > 0
-        ? nextStepsOverride
-        : STAGE_TO_NEXT_STEPS[CREATE_STAGE],
-  };
+  const lifeCycle: Record<string, unknown> = { Stage: mappedStage };
+  if (nextStepsOverride) lifeCycle.NextSteps = nextStepsOverride;
   if (closeDate) lifeCycle.TargetCloseDate = closeDate;
-  // ClosedLostReason only matters when stage is Closed Lost — the create
-  // path always opens at Qualified, so this is a no-op in practice but
-  // mirrors the update-path treatment for consistency.
-  attachEditableLifeCycleFields(lifeCycle, deal, CREATE_STAGE);
+  attachEditableLifeCycleFields(lifeCycle, deal, mappedStage);
 
-  return {
+  const payload: CreatePayload = {
     Catalog: ACE_CATALOG,
     ClientToken: generateClientToken(dealId),
     Customer: { Account: buildCustomerAccount(company, deal, config) },
     Project: project,
     LifeCycle: lifeCycle,
-    OpportunityType: resolveOverride(
-      deal,
-      "ace_opportunity_type",
-      config,
-      "aceDefaultOpportunityType",
-      DEFAULT_ACE_OPPORTUNITY_TYPE
-    ),
-    Origin: "Partner Referral",
-    Marketing: buildMarketing(deal, config),
-    PrimaryNeedsFromAws: resolveMultiOverride(
-      deal,
-      "ace_primary_need_from_aws",
-      config,
-      "aceDefaultPrimaryNeedFromAws",
-      [DEFAULT_ACE_PRIMARY_NEED_FROM_AWS]
-    ),
-    NationalSecurity: resolveOverride(
-      deal,
-      "ace_national_security",
-      config,
-      "aceDefaultNationalSecurity",
-      DEFAULT_ACE_NATIONAL_SECURITY
-    ),
-    // The dealId stringified is enough to satisfy ACE's reconciliation
-    // requirement and to make the opportunity submittable. Mirrors what
-    // the Python batch sync sends in `src/mapping.py:build_create_payload`.
+    // The dealId stringified satisfies ACE's reconciliation requirement
+    // and makes the opportunity submittable.
     PartnerOpportunityIdentifier: String(dealId),
   };
+
+  // Optional top-level fields — AWS requires none of these, so we send
+  // them only when the rep set the corresponding deal property (or an env
+  // default is configured). No hard-coded values. `Origin` is dropped
+  // entirely (was always "Partner Referral").
+  const opportunityType = resolveOptionalOverride(
+    deal,
+    "ace_opportunity_type",
+    config,
+    "aceDefaultOpportunityType"
+  );
+  if (opportunityType) payload.OpportunityType = opportunityType;
+  const marketing = buildMarketing(deal, config);
+  if (marketing) payload.Marketing = marketing;
+  // PrimaryNeedsFromAws is submit-required (gated) but optional at create;
+  // present when submitting, omitted for a bare draft.
+  const primaryNeeds = resolveOptionalMultiOverride(
+    deal,
+    "ace_primary_need_from_aws",
+    config,
+    "aceDefaultPrimaryNeedFromAws"
+  );
+  if (primaryNeeds) payload.PrimaryNeedsFromAws = primaryNeeds;
+  const nationalSecurity = resolveOptionalOverride(
+    deal,
+    "ace_national_security",
+    config,
+    "aceDefaultNationalSecurity"
+  );
+  if (nationalSecurity) payload.NationalSecurity = nationalSecurity;
+
+  return payload;
 }
 
 /**
@@ -914,63 +925,57 @@ export function buildUpdatePayload(
   }
 
   const monthly = computeMonthlyAmount(deal.amount, deal.contract_term__months_);
-  // Title: HubSpot's built-in `dealname`. Same rule as the create
-  // path — last-writer-wins between Share (HubSpot → AWS) and
-  // Refresh (AWS → HubSpot).
-  const title = deal.dealname?.trim() || DEFAULT_PROJECT_TITLE;
+  // Title: HubSpot's built-in `dealname` (enforced by the `dealName`
+  // precondition — no canned "Partner Opportunity" default).
+  const title = deal.dealname?.trim() ?? "";
   const closeDate = parseCloseDate(deal.closedate);
 
-  // Per-deal property → env-level → hardcoded fallback for every
-  // operator-customisable ACE-payload field. Mirrors `buildCreatePayload`.
-  const customerUseCase = resolveOverride(
-    deal,
-    "ace_customer_use_case",
-    config,
-    "aceDefaultUseCase",
-    DEFAULT_ACE_USE_CASE
-  );
-  const deliveryModels = resolveMultiOverride(
-    deal,
-    "ace_delivery_model",
-    config,
-    "aceDefaultDeliveryModel",
-    [DEFAULT_ACE_DELIVERY_MODEL]
-  );
-  const currencyCode = resolveOverride(
+  // No hard-coded defaults: each operator-customisable field comes from
+  // the deal property (or an env default). On UPDATE, ACE treats an
+  // omitted field as "clear it", so a required field left blank surfaces
+  // as REQUIRED_FIELD_MISSING — an actionable error rather than a silent
+  // default. Reps repopulate via the deal (Refresh pulls AWS values back).
+  const currencyCode = resolveOptionalOverride(
     deal,
     "ace_currency_code",
     config,
-    "aceDefaultCurrencyCode",
-    DEFAULT_ACE_CURRENCY_CODE
+    "aceDefaultCurrencyCode"
   );
 
-  // Project block must carry every business-required field. ACE's update
-  // API treats omitted fields as cleared, which fails REQUIRED_FIELD_MISSING.
   const project: Record<string, unknown> = {
     Title: title,
     CustomerBusinessProblem: deal.description ?? "",
-    DeliveryModels: deliveryModels,
-    CustomerUseCase: customerUseCase,
     ExpectedCustomerSpend: [
       {
         Amount: monthly,
-        CurrencyCode: currencyCode,
+        ...(currencyCode ? { CurrencyCode: currencyCode } : {}),
         Frequency: "Monthly",
         // TargetCompany must be 1-80 chars (AWS regex `(?s).{1,80}`).
-        // Same source order as the customer-info fields:
-        // associated company → deal-level `ace_company_name` → "AWS".
         TargetCompany: resolveTargetCompany(company, deal),
       },
     ],
-    SalesActivities:
-      resolveMultiOverride(
-        deal,
-        "ace_sales_activities",
-        config,
-        "aceDefaultSalesActivities",
-        STAGE_TO_SALES_ACTIVITIES[mappedStage] ?? DEFAULT_SALES_ACTIVITIES
-      ),
   };
+  const deliveryModels = resolveOptionalMultiOverride(
+    deal,
+    "ace_delivery_model",
+    config,
+    "aceDefaultDeliveryModel"
+  );
+  if (deliveryModels) project.DeliveryModels = deliveryModels;
+  const customerUseCase = resolveOptionalOverride(
+    deal,
+    "ace_customer_use_case",
+    config,
+    "aceDefaultUseCase"
+  );
+  if (customerUseCase) project.CustomerUseCase = customerUseCase;
+  const salesActivities = resolveOptionalMultiOverride(
+    deal,
+    "ace_sales_activities",
+    config,
+    "aceDefaultSalesActivities"
+  );
+  if (salesActivities) project.SalesActivities = salesActivities;
 
   // Attach additional editable Project fields (CompetitorName,
   // ApnPrograms, AwsPartition, OtherCompetitorNames,
@@ -1006,14 +1011,8 @@ export function buildUpdatePayload(
   // lifecycle stage.
   const lifeCycleStage = options.forceStage ?? mappedStage;
   const nextStepsOverride = deal["hs_next_step"]?.trim();
-  const lifeCycle: Record<string, unknown> = {
-    Stage: lifeCycleStage,
-    NextSteps:
-      nextStepsOverride && nextStepsOverride.length > 0
-        ? nextStepsOverride
-        : STAGE_TO_NEXT_STEPS[lifeCycleStage as AceStage] ??
-          STAGE_TO_NEXT_STEPS[mappedStage],
-  };
+  const lifeCycle: Record<string, unknown> = { Stage: lifeCycleStage };
+  if (nextStepsOverride) lifeCycle.NextSteps = nextStepsOverride;
   if (closeDate) lifeCycle.TargetCloseDate = closeDate;
   // ClosedLostReason picks up the deal-level override — only emitted
   // when the (possibly forced) stage is Closed Lost so ACE doesn't
@@ -1097,38 +1096,13 @@ export function buildUpdatePayload(
       ? options.lockedSoftwareRevenue
       : undefined;
 
-  return {
+  const payload: UpdatePayload = {
     Catalog: ACE_CATALOG,
     Identifier: existingOpportunityId,
     LastModifiedDate: lastModifiedDate,
     LifeCycle: lifeCycle,
     Project: project,
     Customer: customerBlock,
-    // Re-send the create-equivalent business fields so ACE doesn't treat
-    // their absence as "user wants to clear them".
-    OpportunityType: resolveOverride(
-      deal,
-      "ace_opportunity_type",
-      config,
-      "aceDefaultOpportunityType",
-      DEFAULT_ACE_OPPORTUNITY_TYPE
-    ),
-    Origin: "Partner Referral",
-    Marketing: buildMarketing(deal, config),
-    PrimaryNeedsFromAws: resolveMultiOverride(
-      deal,
-      "ace_primary_need_from_aws",
-      config,
-      "aceDefaultPrimaryNeedFromAws",
-      [DEFAULT_ACE_PRIMARY_NEED_FROM_AWS]
-    ),
-    NationalSecurity: resolveOverride(
-      deal,
-      "ace_national_security",
-      config,
-      "aceDefaultNationalSecurity",
-      DEFAULT_ACE_NATIONAL_SECURITY
-    ),
     PartnerOpportunityIdentifier: String(dealId),
     ...(softwareRevenuePassthrough !== undefined
       ? { SoftwareRevenue: softwareRevenuePassthrough }
@@ -1156,4 +1130,33 @@ export function buildUpdatePayload(
     //     prevents new opportunities from being permanently
     //     orphaned in null-ReviewStatus state.
   };
+
+  // Optional top-level fields — sent only when the rep set the deal
+  // property (or an env default exists). No hard-coded values; `Origin`
+  // is dropped entirely.
+  const opportunityType = resolveOptionalOverride(
+    deal,
+    "ace_opportunity_type",
+    config,
+    "aceDefaultOpportunityType"
+  );
+  if (opportunityType) payload.OpportunityType = opportunityType;
+  const marketing = buildMarketing(deal, config);
+  if (marketing) payload.Marketing = marketing;
+  const primaryNeeds = resolveOptionalMultiOverride(
+    deal,
+    "ace_primary_need_from_aws",
+    config,
+    "aceDefaultPrimaryNeedFromAws"
+  );
+  if (primaryNeeds) payload.PrimaryNeedsFromAws = primaryNeeds;
+  const nationalSecurity = resolveOptionalOverride(
+    deal,
+    "ace_national_security",
+    config,
+    "aceDefaultNationalSecurity"
+  );
+  if (nationalSecurity) payload.NationalSecurity = nationalSecurity;
+
+  return payload;
 }

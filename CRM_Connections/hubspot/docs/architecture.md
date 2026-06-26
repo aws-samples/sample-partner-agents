@@ -2,6 +2,8 @@
 
 This document covers the design and request flow of both the CRM stack and the Agent stack, plus day-2 operations and the verbatim-error catalogue. For step-by-step deployment see [`docs/workshop.md`](workshop.md).
 
+> **Sample scope.** This is a sample built for the AWS Partner Central **Sandbox** catalog for testing and learning, not production. The design notes below explain why things work the way they do in the sandbox; where a production rollout would differ, they point to the customisation you'd make yourself. See [Adapting for production](../README.md#adapting-for-production).
+
 ## Component diagram
 
 ```mermaid
@@ -26,9 +28,9 @@ graph TB
       end
 
       subgraph "Agent stack (ace-agent)"
-        AgentApiGw[API Gateway HTTP API<br/>/agent · /agent/start · /agent/poll]
-        AgentLambda[Agent Lambda<br/>sync /agent · legacy fallback]
-        AgentAsyncLambda[Agent Async Lambda<br/>start · poll · worker]
+        AgentApiGw[API Gateway HTTP API<br/>/agent, /agent/start, /agent/poll]
+        AgentLambda[Agent Lambda<br/>sync /agent, legacy fallback]
+        AgentAsyncLambda[Agent Async Lambda<br/>start, poll, worker]
         AgentSecret[Secrets Manager<br/>crm-connector/ace-agent]
         AgentJobTable[(DynamoDB<br/>ace-agent-jobs)]
       end
@@ -68,41 +70,41 @@ graph TB
     AgentAsyncLambda --> AgentSecret
 ```
 
-## Request flow — CRM Share button
+## Request flow: CRM Share button
 
 1. Rep clicks **Share to AWS** on a deal.
 2. The card POSTs `{ dealId }` to `<api>/share` via `hubspot.fetch`. HubSpot attaches a v3 HMAC signature in the `X-HubSpot-Signature-V3` header.
-3. The Share Lambda verifies the signature using `HUBSPOT_CLIENT_SECRET` from Secrets Manager. Invalid signature → 401.
+3. The Share Lambda verifies the signature using `HUBSPOT_CLIENT_SECRET` from Secrets Manager. Invalid signature returns 401.
 4. The Lambda reads the deal's `~30` properties from HubSpot (single round-trip) and the deal's primary associated company.
-5. **Validation** (`backend/lib/preconditions.ts`): close date set, amount > 0, country code resolvable, postal code, description ≥ 20 chars, deal stage maps to an ACE stage, at least one Solution Offering or `OtherSolutionDescription`. Failures return a 422 with the violated rule names.
+5. **Validation** (`backend/lib/preconditions.ts`): close date set, amount > 0, country code resolvable, postal code, description of at least 20 chars, deal stage maps to an ACE stage, at least one Solution Offering or `OtherSolutionDescription`. Failures return a 422 with the violated rule names.
 6. **Branch** on whether `ace_opportunity_id` is set:
-   - **Empty** → create path: `CreateOpportunity` → write back the new ID → one `AssociateOpportunity` per Solution + AWS Product → optionally `StartEngagementFromOpportunityTask`.
-   - **Set** → update path: `GetOpportunity` (for `LastModifiedDate` + current associations) → `UpdateOpportunity` → reconcile Solution + AWS Product associations → read back via `GetOpportunity` + `GetAwsOpportunitySummary`.
+   - **Empty**: create path. `CreateOpportunity`, then write back the new ID, then one `AssociateOpportunity` per Solution and AWS Product, then optionally `StartEngagementFromOpportunityTask`.
+   - **Set**: update path. `GetOpportunity` (for `LastModifiedDate` and current associations), then `UpdateOpportunity`, then reconcile Solution and AWS Product associations, then read back via `GetOpportunity` and `GetAwsOpportunitySummary`.
 7. The Lambda writes the AWS-side state back to the deal's `aws_*` and round-trippable `ace_*` properties.
 
-The two Submission_Mode classifications (`Create_And_Submit` vs `Create_Only`) decide whether `StartEngagementFromOpportunityTask` fires on the create path. The update path does **not** auto-submit because the Sandbox catalog's `UpdateOpportunity` strips `ReviewStatus` to null when the field is absent on the wire — see ["Why does Update preserve `LifeCycle.ReviewStatus`?"](#why-does-update-preserve-lifecyclereviewstatus) below.
+The two Submission_Mode classifications (`Create_And_Submit` vs `Create_Only`) decide whether `StartEngagementFromOpportunityTask` fires on the create path. The update path does **not** auto-submit because the Sandbox catalog's `UpdateOpportunity` strips `ReviewStatus` to null when the field is absent on the wire. See ["Why does Update preserve `LifeCycle.ReviewStatus`?"](#why-does-update-preserve-lifecyclereviewstatus) below.
 
-## Request flow — CRM EventBridge auto-pull
+## Request flow: CRM EventBridge auto-pull
 
-> **Prerequisite — Partner Central event publishing.** The Pull Lambda only fires when AWS Partner Central is actually publishing `aws.partnercentral-selling` events into your account's default EventBridge bus. Per [AWS's selling-API events docs](https://docs.aws.amazon.com/partner-central/latest/APIReference/selling-api-events.html) (content rephrased for compliance), the partner's IAM principal needs `events:PutRule` permission scoped to `events:source = aws.partnercentral-selling`, and the partner organisation must have opted into the Partner Central event-notification feature on the account. **If your account hasn't done this**, the EventBridge rule the CRM stack creates will deploy successfully but stay idle — no events ever arrive. The card's manual **Refresh from AWS Partner Central** button doubles as a backfill mechanism in that scenario: it reads the live AWS state via `GetOpportunity` / `GetAwsOpportunitySummary` and writes back to HubSpot, on demand.
+> **Prerequisite: Partner Central event publishing.** The Pull Lambda only fires when AWS Partner Central is actually publishing `aws.partnercentral-selling` events into your account's default EventBridge bus. Per [AWS's selling-API events docs](https://docs.aws.amazon.com/partner-central/latest/APIReference/selling-api-events.html) (content rephrased for compliance), the partner's IAM principal needs `events:PutRule` permission scoped to `events:source = aws.partnercentral-selling`, and the partner organisation must have opted into the Partner Central event-notification feature on the account. **If your account hasn't done this**, the EventBridge rule the CRM stack creates will deploy successfully but stay idle, with no events ever arriving. The card's manual **Refresh from AWS Partner Central** button doubles as a backfill mechanism in that scenario: it reads the live AWS state via `GetOpportunity` / `GetAwsOpportunitySummary` and writes back to HubSpot, on demand.
 >
 > Decision matrix:
 >
-> | EventBridge enabled? | AWS → HubSpot sync mode | |---|---| | Yes | Real-time, automatic. Pull Lambda fires within seconds of any AWS-side change. Refresh button still works for manual re-sync. | | No | Manual only. Click Refresh on each deal whenever you need to pull AWS-side state. The deployed EventBridge rule is harmless but unused — leave it in place; turning Partner Central events on later "lights up" the path with no redeploy needed. |
+> | EventBridge enabled? | AWS to HubSpot sync mode | |---|---| | Yes | Real-time, automatic. Pull Lambda fires within seconds of any AWS-side change. Refresh button still works for manual re-sync. | | No | Manual only. Click Refresh on each deal whenever you need to pull AWS-side state. The deployed EventBridge rule is harmless but unused, so leave it in place; turning Partner Central events on later "lights up" the path with no redeploy needed. |
 
 The CRM stack subscribes to AWS EventBridge events from `aws.partnercentral-selling`:
 
 1. AWS emits an `Opportunity Created` or `Opportunity Updated` event whenever a Partner-Central-side change happens (UI edit, agent-driven write, AWS-shared invitation accepted).
 2. The Pull Lambda receives the event filtered by `detail.catalog`.
 3. **Search** for an existing HubSpot deal with `ace_opportunity_id == <event.detail.id>`.
-4. **If found**: run the same logic the Refresh button runs — write the AWS-side state to the deal.
+4. **If found**: run the same logic the Refresh button runs, writing the AWS-side state to the deal.
 5. **If not found**: create a new HubSpot deal at `PULL_DEFAULT_STAGE` seeded from AWS state.
 
 A DynamoDB lock table (`ace-share-pull-locks`) prevents Pull and the Share-time post-create writeback from racing on the same deal.
 
 End-to-end latency is typically 2-3 seconds.
 
-## Request flow — Agent
+## Request flow: Agent
 
 1. Rep types a message in the Agent card.
 2. The card POSTs to `<api>/agent/start` with `{ message, sessionId, dealId }`.
@@ -112,10 +114,10 @@ End-to-end latency is typically 2-3 seconds.
    - **Optional** (when `HUBSPOT_PRIVATE_APP_TOKEN` is configured): the worker reads the deal's properties from HubSpot and prepends a context preamble like *"You are acting on HubSpot deal 12345 with opportunity O123 in Pending Submission state..."* so the agent has the deal context without the rep having to paste it.
    - The worker SigV4-signs a JSON-RPC 2.0 message to the Partner Central Agent MCP Server's `/sendMessage` endpoint and waits for the response.
    - On return, the worker writes the `AgentResponse` to DynamoDB and marks the job `complete` (or `error`).
-6. The card's next poll picks up the result and renders. The poll handler is a single DynamoDB GetItem — cheap.
-7. **Approval gate**: when the agent wants to call a write tool (e.g. `CreateOpportunity`, `UpdateOpportunity`), the response carries an `approval_request` block. The card renders Approve / Reject / Override buttons. The user's choice POSTs back through the same `/agent/start` + poll cycle — never the synchronous route.
+6. The card's next poll picks up the result and renders. The poll handler is a single DynamoDB GetItem, which is cheap.
+7. **Approval gate**: when the agent wants to call a write tool (e.g. `CreateOpportunity`, `UpdateOpportunity`), the response carries an `approval_request` block. The card renders Approve / Reject / Override buttons. The user's choice POSTs back through the same `/agent/start` and poll cycle, never the synchronous route.
 
-The Agent never receives long-lived credentials — SigV4 signing uses the Lambda execution role's own credentials at runtime.
+The Agent never receives long-lived credentials. SigV4 signing uses the Lambda execution role's own credentials at runtime.
 
 A separate synchronous `POST /agent` route + Lambda is still deployed (in the same CFN stack) but the card no longer routes traffic through it. It exists as a fallback for direct-curl debugging or for partners who want a synchronous interface for their own tooling.
 
@@ -131,13 +133,13 @@ The async pattern decouples the wire-call duration from MCP's response time:
 - The worker invocation runs at 5-minute Lambda timeout, untethered from API Gateway.
 - The card polls `GET /agent/poll` every 1.5 s. Each poll is a single DynamoDB GetItem.
 
-Why not Server-Sent Events on the wire (the AWS-recommended path for long MCP calls)? `hubspot.fetch` is a JSON request/response wrapper — it can't consume an SSE stream from inside a HubSpot UI Extension. The async-poll pattern delivers the same UX without that constraint.
+Why not Server-Sent Events on the wire (the AWS-recommended path for long MCP calls)? `hubspot.fetch` is a JSON request/response wrapper, so it can't consume an SSE stream from inside a HubSpot UI Extension. The async-poll pattern delivers the same UX without that constraint.
 
-A second motivation: MCP scopes sessions by SigV4 caller identity. When we initially split the workload across two Lambdas with two IAM roles (a sync Lambda for chat + an async Lambda for bulk imports), sessions created by one role were invisible to the other, producing intermittent `ResourceNotFoundException` errors mid-conversation. Routing every card→backend call through the same async Lambda + role keeps session continuity working.
+A second motivation: MCP scopes sessions by SigV4 caller identity. When we initially split the workload across two Lambdas with two IAM roles (a sync Lambda for chat + an async Lambda for bulk imports), sessions created by one role were invisible to the other, producing intermittent `ResourceNotFoundException` errors mid-conversation. Routing every card to backend call through the same async Lambda and role keeps session continuity working.
 
 ### Why two stacks instead of one?
 
-The CRM and Agent integrations have **almost no shared infrastructure**. They have separate Lambdas, separate Secrets Manager blobs, separate IAM roles (different managed policies), separate API Gateways. Combining them into a single CFN template via conditionals adds complexity without saving deploys — the unified deploy script drives both stacks from one command, which is the actual partner UX win. Keeping them as two stacks means you can redeploy either independently and a security incident in one doesn't bleed into the other.
+The CRM and Agent integrations have **almost no shared infrastructure**. They have separate Lambdas, separate Secrets Manager blobs, separate IAM roles (different managed policies), separate API Gateways. Combining them into a single CFN template via conditionals adds complexity without saving deploys, since the unified deploy script drives both stacks from one command, which is the actual partner UX win. Keeping them as two stacks means you can redeploy either independently and a security incident in one doesn't bleed into the other.
 
 ### Why is the `hubspot-card/` API URL gitignored?
 
@@ -149,27 +151,47 @@ Each partner's deployed API URL is unique (e.g. `abc123.execute-api.us-east-1.am
 
 ### Why does Update preserve `LifeCycle.ReviewStatus`?
 
-Empirically, the Sandbox catalog's `UpdateOpportunity` API silently strips `ReviewStatus` to null when the field is absent on the wire. This permanently orphans the opportunity (`SubmitOpportunity` requires `ReviewStatus ∈ {Pending Submission, Action Required}`). The fix: read the current `ReviewStatus` from `GetOpportunity` and echo the same value back on `UpdateOpportunity` as a safe same-value passthrough. AWS docs describe `ReviewStatus` as read-only on update, but the same-value passthrough is accepted in practice.
+Empirically, the Sandbox catalog's `UpdateOpportunity` API silently strips `ReviewStatus` to null when the field is absent on the wire. This permanently orphans the opportunity (`SubmitOpportunity` requires `ReviewStatus` to be one of {Pending Submission, Action Required}). The fix: read the current `ReviewStatus` from `GetOpportunity` and echo the same value back on `UpdateOpportunity` as a safe same-value passthrough. AWS docs describe `ReviewStatus` as read-only on update, but the same-value passthrough is accepted in practice.
 
 Full reproduction:
 
-1. `CreateOpportunity` → opp lands at `ReviewStatus = "Pending Submission"`.
-2. `UpdateOpportunity` (without `LifeCycle.ReviewStatus` in the payload) → opp's `ReviewStatus` resets to `null`.
-3. `StartEngagementFromOpportunityTask` → AWS rejects with `OPPORTUNITY_VALIDATION_FAILED`.
+1. `CreateOpportunity`: opp lands at `ReviewStatus = "Pending Submission"`.
+2. `UpdateOpportunity` (without `LifeCycle.ReviewStatus` in the payload): opp's `ReviewStatus` resets to `null`.
+3. `StartEngagementFromOpportunityTask`: AWS rejects with `OPPORTUNITY_VALIDATION_FAILED`.
 
 For opps already orphaned before the fix landed, the only AWS-side recovery is `UpdateOpportunity` with `ReviewStatus: "Action Required"`, which is rejected on the production AWS catalog. Practical recovery: clone the HubSpot deal to a new deal and re-share.
 
 ### Why is the Share button hidden in some review states?
 
-Once the opp is at `aws_review_status ∈ {Pending Submission, "", Submitted, In Review}`, clicking Share is either pointless (already saved, will fail) or actively harmful (could trigger the ReviewStatus-strip bug above). The card hides Share entirely in these states. The user's only path forward is Submit (for draft-state opps) or waiting for AWS review to complete (for Submitted / In Review).
+Once the opp is at an `aws_review_status` of Pending Submission, empty, Submitted, or In Review, clicking Share is either pointless (already saved, will fail) or actively harmful (could trigger the ReviewStatus-strip bug above). The card hides Share entirely in these states. The user's only path forward is Submit (for draft-state opps) or waiting for AWS review to complete (for Submitted / In Review).
 
 ### Why is `ace_solutions` and `ace_aws_products` required-or-Other for Solutions but optional for Products?
 
-AWS Partner Central requires either at least one Solution Offering or a non-blank `OtherSolutionDescription` on every opportunity — that's a hard precondition. AWS Products are entirely optional; an opportunity can ship with zero products. The card surfaces Products as an info row (ℹ️) when populated and omits the row when blank.
+AWS Partner Central requires either at least one Solution Offering or a non-blank `OtherSolutionDescription` on every opportunity, which is a hard precondition. AWS Products are entirely optional; an opportunity can ship with zero products. The card surfaces Products as an info row when populated and omits the row when blank.
+
+### Why are there no hardcoded field defaults?
+
+Earlier builds injected silent defaults for fields the operator left blank (e.g. a canned project title, `CustomerUseCase`, `SalesActivities`, `Marketing.Source = "None"`). That sent values to AWS the partner never chose and masked real data-quality gaps. Now every previously-defaulted field maps to a HubSpot deal property and is either **required** (enforced as a precondition, so a blank surfaces an actionable error) or **optional** (omitted from the wire when blank, with no empty strings and no filler). The only structural constant is `ExpectedCustomerSpend.Frequency = "Monthly"`. Migration note: opportunities created under the old defaults have blank `ace_*` properties locally; a Refresh repopulates them from AWS, after which updates/re-shares pass preconditions again.
+
+### Why is reverse-sync non-destructive?
+
+AWS does not echo every partner input back. Most importantly, `InvolvementType` and `Visibility` are absent from `GetAwsOpportunitySummary` until an opportunity is submitted. If the AWS to HubSpot writeback wrote those back as `""`, it would wipe the values the rep just entered on a draft, making submission impossible (Refresh and Pull would erase the field before the rep could use it). So `snapshotToProps` **omits a partner-editable input field when AWS returns blank** rather than clobbering it. The AWS-owned mirror fields (`aws_review_status`, `aws_stage`, sync-health flags) are still written even when blank, because AWS owns those and a blank legitimately clears stale state.
+
+### Why is Submit locked when the deal has unpushed edits?
+
+Submit only runs `StartEngagementFromOpportunityTask` against whatever is **already** on the AWS opportunity, and it does not push the deal's current field values. A draft created (or edited) before its fields reached AWS would therefore fail AWS validation on Submit even though the deal looks complete. The card detects the **"Pending Sync"** state (`hs_lastmodifieddate` past `ace_last_sync` + a 5s skew window) and disables Submit until the rep clicks "Push updates to AWS". The skew window avoids a false lock right after a push (HubSpot bumps `hs_lastmodifieddate` by about 1 to 2 seconds when the backend writes `ace_last_sync`).
+
+### Why do AWS validation errors now show field-level detail?
+
+Partner Central `ValidationException`s often carry an empty top-level message, which the AWS SDK surfaces as the literal `"UnknownError"`, while the actionable detail lives in `ErrorList: [{ FieldName, Message, Code }]`. `describeAceError()` folds those entries into one readable string (e.g. `ExpectedCustomerSpend.CurrencyCode: ESC cloud partition requires EUR currency (INVALID_VALUE)`) for both the CloudWatch log and the deal's `ace_sync_error`. Submit additionally polls the engagement task after `StartEngagement` to catch **asynchronous** validation failures (the task lands on `FAILED` a beat after the call returns) and surfaces the same field-level reason instead of reporting a false success.
+
+### Why must only one stack reverse-sync into a HubSpot portal?
+
+The Pull Lambda's EventBridge rule filters on `detail.catalog`, and each stack writes into one HubSpot portal. If two stacks filter the **same** catalog and point at the **same** portal (e.g. a `--env-suffix dev` stack alongside the canonical one, both on `Sandbox`), both Pull Lambdas fire for every opportunity event and each creates its own HubSpot deal, a duplicate per opportunity, since the two stacks keep independent lock tables and can't dedupe against each other. **Rule: at most one stack per `(catalog, HubSpot portal)` pair.** A Sandbox stack and a Production stack (catalog `AWS`) are disjoint and can coexist even on one portal. See [`../infra/README.md`](../infra/README.md#one-stack-per-catalog-and-hubspot-portal) for the detect/fix runbook and the Sandbox to Production migration checklist.
 
 ## Cost model
 
-Approximate monthly cost for a partner running ~300 Share clicks / ~100 Submit clicks / ~500 Refresh clicks / ~100 EventBridge events:
+Approximate monthly cost for a partner running about 300 Share clicks, about 100 Submit clicks, about 500 Refresh clicks, and about 100 EventBridge events:
 
 | Component | Cost / month |
 |---|---|
@@ -180,11 +202,11 @@ Approximate monthly cost for a partner running ~300 Share clicks / ~100 Submit c
 | DynamoDB on-demand (`ace-share-pull-locks` + `ace-agent-jobs`) | <$0.02 |
 | EventBridge rule | <$0.01 |
 | CloudWatch Logs (1GB free + retention) | <$0.05 |
-| **Total CRM stack** | ~$0.45 |
-| **Total Agent stack** | ~$0.45 |
-| **Total CRM-and-Agent** | ~$0.90 |
+| **Total CRM stack** | about $0.45 |
+| **Total Agent stack** | about $0.45 |
+| **Total CRM-and-Agent** | about $0.90 |
 
-S3 artifact bucket storage is negligible (~50MB versioned).
+S3 artifact bucket storage is negligible (about 50MB versioned).
 
 ## Repository layout
 
@@ -212,9 +234,9 @@ Behaviour:
 
 - Suffix must be lowercase letters, digits, or hyphens, max 16 chars (CFN parameter constraint).
 - The suffix is appended to the CFN stack name (`ace-share-refresh-dev`, `ace-agent-dev`) AND to every globally-scoped resource: Lambda function names, IAM role names, log group names, Secrets Manager secret IDs, DynamoDB table names, HTTP API names, EventBridge rule name.
-- Empty / unset suffix preserves the canonical names — existing deploys keep working unchanged after picking up the template change.
+- Empty or unset suffix preserves the canonical names, so existing deploys keep working unchanged after picking up the template change.
 - Both deploys share the same artifact S3 bucket (`ace-share-refresh-deploy-<account>-<region>`); zips are content-hashed so there's no collision.
-- Each environment writes a fresh `crm-connector/ace-share-<suffix>` secret and a fresh DynamoDB table — populate them via `./infra/set-secrets.sh` and `./agent-infra/set-secrets.sh` separately.
+- Each environment writes a fresh `crm-connector/ace-share-<suffix>` secret and a fresh DynamoDB table. Populate them via `./infra/set-secrets.sh` and `./agent-infra/set-secrets.sh` separately.
 
 > Card-side caveat: `agent-card/src/app/cards/config.local.ts` and `agent-card/src/app/app-hsmeta.json` get overwritten on every deploy with whatever stack ran last. With dev + prod in the same HubSpot portal, the **last deploy wins on the card side**. Either keep two checkouts of the repo (one per environment), or run `hs project upload` immediately after each deploy before swapping.
 
@@ -230,7 +252,7 @@ Behaviour:
 
 ### Force-bounce warm Lambda containers
 
-Secrets Manager updates don't auto-bounce Lambda containers — warm containers keep serving the old values until they cold-start.
+Secrets Manager updates don't auto-bounce Lambda containers, so warm containers keep serving the old values until they cold-start.
 
 **Easiest path: let `set-secrets.sh` do it.** Pass `--auto-bounce` and the script updates the secret AND bounces every Lambda in the stack, reading each function's existing env vars first and only bumping a no-op `FORCE_REFRESH` timestamp (so it never drops `PULL_LOCK_TABLE`, `AGENT_JOB_TABLE`, etc.). It discovers the function names from the stack, so it works regardless of `--env-suffix`:
 
@@ -241,7 +263,7 @@ Secrets Manager updates don't auto-bounce Lambda containers — warm containers 
 
 **Manual path** (if you changed config outside `set-secrets.sh`). Lambda rejects concurrent `update-function-configuration` calls against the same function (`ResourceConflictException`), so each loop waits for the previous update to settle before moving on.
 
-> If you deployed with `--env-suffix <name>`, append `-<name>` to every Lambda function name in the loops and to `ACE_SHARE_SECRET_ID` / `ACE_AGENT_SECRET_ID`. Easier: use the `--auto-bounce` path above — it fills in the correct suffixed names automatically.
+> If you deployed with `--env-suffix <name>`, append `-<name>` to every Lambda function name in the loops and to `ACE_SHARE_SECRET_ID` / `ACE_AGENT_SECRET_ID`. Easier: use the `--auto-bounce` path above, which fills in the correct suffixed names automatically.
 
 ```bash
 STAMP=$(date +%s)
@@ -257,7 +279,7 @@ for fn in ace-share-ShareLambda ace-share-RefreshLambda ace-share-PullLambda ace
   echo "  bounced $fn"
 done
 
-# Agent stack — bounce BOTH (sync + async)
+# Agent stack, bounce BOTH (sync + async)
 for fn in ace-agent-AgentLambda ace-agent-AgentAsyncLambda; do
   aws lambda update-function-configuration --function-name "$fn" \
     --region "${AWS_REGION:-us-east-1}" \
@@ -300,7 +322,7 @@ python -m src.main list-stages   # prints HubSpot stage IDs
 # appointmentscheduled=Qualified;qualifiedtobuy=Qualified;closedwon=Launched;closedlost=Closed Lost
 ```
 
-Multiple HubSpot stages can map to the same ACE stage. On Refresh (reverse direction: ACE → HubSpot), the **first entry** for a given ACE stage wins.
+Multiple HubSpot stages can map to the same ACE stage. On Refresh (reverse direction: ACE to HubSpot), the **first entry** for a given ACE stage wins.
 
 ### Refresh the AWS Products picklist
 
@@ -313,11 +335,11 @@ CSV_PATH=/tmp/SampleAWSProducts.csv \
 
 The script PATCHes existing options without recreating the property, so existing deal values are preserved. `--dry-run` prints the planned API call without sending.
 
-### Optional: auto-copy company → deal address fields (HubSpot Workflow)
+### Optional: auto-copy company to deal address fields (HubSpot Workflow)
 
 By default the Share lambda falls back from the deal's `ace_*` properties to the associated company's `hs_country_code` / `state` / `zip`. If you want HubSpot to copy company values onto the deal directly (so the deal carries customer info standalone), set up a Workflow:
 
-1. **Automation → Workflows → Create workflow → From scratch**, object type **Deal**.
+1. **Automation, Workflows, Create workflow, From scratch**, object type **Deal**.
 2. Trigger: `Primary associated company is known` (enable re-enrolment on the same trigger).
 3. Add **Set property value** actions reading from the Primary associated company:
 
@@ -412,9 +434,9 @@ If `State: ENABLED` and matched-event sum is 0 across the window during which AW
 
 1. Opt into the Partner Central event-notification feature on the AWS Partner Network account (Client Credentials flow setup).
 2. Ensure the partner's IAM principal has `events:PutRule` permission scoped to `events:source = aws.partnercentral-selling`.
-3. Wait up to 24h after enabling, then re-check `MatchedEvents`. If still zero, contact Partner Central support — sometimes there's a backend whitelist step.
+3. Wait up to 24h after enabling, then re-check `MatchedEvents`. If still zero, contact Partner Central support, since sometimes there's a backend whitelist step.
 
-In the meantime, the **Refresh** button on each deal serves as the manual backfill: it runs the same `GetOpportunity` / `GetAwsOpportunitySummary` reads the Pull Lambda would have run on an event. See § Request flow — CRM EventBridge auto-pull above for the full design.
+In the meantime, the **Refresh** button on each deal serves as the manual backfill: it runs the same `GetOpportunity` and `GetAwsOpportunitySummary` reads the Pull Lambda would have run on an event. See the Request flow for CRM EventBridge auto-pull section above for the full design.
 
 ### `Configuration error: missing secrets: HUBSPOT_CLIENT_SECRET`
 
@@ -422,7 +444,7 @@ Re-run `./infra/set-secrets.sh HUBSPOT_CLIENT_SECRET` (or `./agent-infra/set-sec
 
 ### `Authorization failed. Reload the HubSpot page and try again`
 
-The `HUBSPOT_CLIENT_SECRET` in Secrets Manager doesn't match the value on the HubSpot Private App's Auth tab. Copy from HubSpot Settings → Integrations → Legacy apps → your app → Auth → Client Secret, update Secrets Manager, bounce the lambdas. (Note: HubSpot renamed "Private Apps" to "Legacy apps" in 2026; functionality is unchanged.)
+The `HUBSPOT_CLIENT_SECRET` in Secrets Manager doesn't match the value on the HubSpot Private App's Auth tab. Copy from HubSpot Settings, Integrations, Legacy apps, your app, Auth, Client Secret, then update Secrets Manager and bounce the lambdas. (Note: HubSpot renamed "Private Apps" to "Legacy apps" in 2026; functionality is unchanged.)
 
 ### `Unexpected response from backend (status 403)`
 
@@ -434,7 +456,7 @@ Card is calling a URL that's not in `permittedUrls.fetch`. Hard-reload the deal 
 
 ### `Cannot share: closedate` / `amount`
 
-HubSpot's built-in `closedate` is empty or `amount` is zero/missing/negative. Edit the deal — live updates flow through without a page reload.
+HubSpot's built-in `closedate` is empty or `amount` is zero/missing/negative. Edit the deal, and live updates flow through without a page reload.
 
 ### `Cannot share: countryCode` / `stateOrRegion` / `postalCode`
 
@@ -458,7 +480,7 @@ Deal's `dealstage` isn't in `STAGE_MAPPING`. See the [stage mapping](#customisin
 
 ### `ACTION_NOT_PERMITTED: You cannot perform Submit action`
 
-The opportunity's `LifeCycle.ReviewStatus` is null. Fixed in current code (the lambda preserves `ReviewStatus` on every Update via same-value passthrough). Already-orphaned opps from before the fix have no clean recovery — clone the HubSpot deal to a new one or delete and re-share.
+The opportunity's `LifeCycle.ReviewStatus` is null. Fixed in current code (the lambda preserves `ReviewStatus` on every Update via same-value passthrough). Already-orphaned opps from before the fix have no clean recovery. Clone the HubSpot deal to a new one or delete and re-share.
 
 ### `STALE_OPPORTUNITY: This deal changed in ACE since you last synced.`
 
@@ -470,7 +492,7 @@ MCP evicted the agent session (in practice sooner than the documented 48h TTL). 
 
 ### `AWS Partner Central encountered an internal error. Try again.`
 
-MCP `-32603 INTERNAL_ERROR` — the catch-all for server-side failures. Usually resolves on retry. Persistent? Check `./agent-infra/tail-logs.sh async`.
+MCP `-32603 INTERNAL_ERROR` is the catch-all for server-side failures. Usually resolves on retry. Persistent? Check `./agent-infra/tail-logs.sh async`.
 
 ### Bulk import shows "Batch N failed"
 

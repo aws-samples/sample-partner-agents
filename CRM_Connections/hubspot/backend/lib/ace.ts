@@ -90,6 +90,65 @@ function isThrottlingError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Build a verbose, operator-actionable diagnostic string from an AWS
+ * Partner Central SDK error.
+ *
+ * Partner Central `ValidationException`s frequently carry an EMPTY
+ * top-level `message` — which the AWS SDK then surfaces as the useless
+ * literal `"UnknownError"` — while the real, field-level detail lives in
+ * `ErrorList: [{ FieldName, Message, Code }]` (and sometimes a `Reason`).
+ * Example seen in the wild: top-level message empty, ErrorList =
+ * `[{ FieldName: "ExpectedCustomerSpend.CurrencyCode", Code:
+ * "INVALID_VALUE", Message: "ESC cloud partition requires EUR currency" }]`.
+ *
+ * This folds those entries into a single readable string so the card's
+ * "Sync Error" and the CloudWatch log show e.g.
+ *   "ExpectedCustomerSpend.CurrencyCode: ESC cloud partition requires EUR
+ *    currency (INVALID_VALUE)"
+ * instead of "UnknownError". It only ever exposes AWS's own field names
+ * and diagnostics — never the request payload values.
+ */
+export function describeAceError(err: unknown): string {
+  if (err === null || typeof err !== "object") {
+    return typeof err === "string" && err.length > 0 ? err : "unknown error";
+  }
+  const e = err as Record<string, unknown>;
+  const name = typeof e.name === "string" ? e.name : "";
+  const baseMsg =
+    typeof e.message === "string" && e.message.length > 0 ? e.message : "";
+  const reason = typeof e.Reason === "string" ? e.Reason : "";
+
+  // Fold field-level ErrorList entries (the actionable part).
+  const list = Array.isArray(e.ErrorList) ? e.ErrorList : [];
+  const fieldParts: string[] = [];
+  for (const item of list) {
+    if (item !== null && typeof item === "object") {
+      const f = item as Record<string, unknown>;
+      const field = typeof f.FieldName === "string" ? f.FieldName : "";
+      const fmsg = typeof f.Message === "string" ? f.Message : "";
+      const fcode = typeof f.Code === "string" ? f.Code : "";
+      const seg = [field, fmsg].filter((s) => s.length > 0).join(": ");
+      const withCode = fcode.length > 0 ? `${seg} (${fcode})`.trim() : seg;
+      if (withCode.length > 0) fieldParts.push(withCode);
+    }
+  }
+  const detail = fieldParts.join("; ");
+
+  // The SDK fills `.message` with "UnknownError" when the modeled message
+  // is empty — treat that as no-signal so we prefer the field-level detail.
+  const usefulBase = baseMsg && baseMsg !== "UnknownError" ? baseMsg : "";
+
+  if (detail) {
+    return usefulBase ? `${usefulBase} — ${detail}` : detail;
+  }
+  if (usefulBase) return usefulBase;
+  if (reason) return reason;
+  // Last resort: the raw (unhelpful) message or the exception name, so we
+  // never return an empty string.
+  return baseMsg || name || "unknown error";
+}
+
 /** Await-able sleep for the inter-retry delay. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {

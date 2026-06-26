@@ -47,7 +47,7 @@ This project has **no `app.functions/` directory**, so it deploys on every HubSp
 
 ## Standard workflow
 
-### Deploy the card (production)
+### Deploy the card
 
 ```bash
 cd agent-card

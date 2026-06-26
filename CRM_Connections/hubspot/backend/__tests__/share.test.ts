@@ -62,13 +62,24 @@ function makeValidDeal(overrides: Partial<DealProps> = {}): DealProps {
     dealname: "Acme Migration",
     dealstage: "qualified",
     amount: "12000",
-    closedate: "2025-12-15",
+    closedate: "2026-12-15",
     contract_term__months_: "12",
     description:
       "Customer needs to migrate 20 workloads to AWS.",
     ace_solutions: "S-0000001",
+    // Create-path preconditions (no silent defaults anymore): currency,
+    // website, and industry are all deal-property-driven and required.
+    ace_currency_code: "USD",
+    ace_website_url: "https://acme.com",
+    ace_industry: "Software and Internet",
+    // All five Submission_Required_Fields populated so the default
+    // classification is Create_And_Submit (StartEngagement fires).
     ace_involvement_type: "Co-Sell",
     ace_visibility: "Full",
+    ace_delivery_model: "SaaS or PaaS",
+    ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+    ace_customer_use_case: "Business Applications & Contact Center",
+    ace_sales_activities: "Initialized discussions with customer",
     ...overrides,
   };
 }
@@ -152,6 +163,9 @@ function buildHs(
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Pin the clock so the future-close-date precondition is deterministic.
+  // makeValidDeal's closedate sits comfortably after this.
+  vi.setSystemTime(new Date("2026-06-24T00:00:00.000Z"));
 });
 
 afterEach(() => {
@@ -330,6 +344,47 @@ describe("runShare — create path", () => {
     expect(
       ace.mocks.startEngagementFromOpportunityTask
     ).not.toHaveBeenCalled();
+  });
+
+  test("StartEngagement TaskStatus=FAILED (no throw) is surfaced as ACE_CREATE + Sync Error, not a false success", async () => {
+    // AWS does NOT throw for submission validation failures — the
+    // engagement task resolves (HTTP 200) with TaskStatus "FAILED" and a
+    // Message. The create path must detect that instead of reporting a
+    // successful submit. (Ground-truthed against the Sandbox API.)
+    const deal = makeValidDeal();
+    const company = makeValidCompany();
+    const ace = buildAce({
+      startEngagementFromOpportunityTask: vi.fn().mockResolvedValue({
+        TaskId: "task-x",
+        TaskStatus: "FAILED",
+        Message:
+          "BUSINESS_VALIDATION_EXCEPTION relatedEntityIdentifiers.solutions:Associate atleast one solution;REQUIRED_FIELD_MISSING customer.account.address.stateOrRegion:customer.account.address.stateOrRegion is required",
+      }),
+    });
+    const hs = buildHs(deal, company);
+
+    const p = runShare(42, {
+      config: BASE_CONFIG,
+      ace: ace.client,
+      hs: hs.client,
+    });
+    // create → write → associate (1 delay) → delay before engagement.
+    await vi.advanceTimersByTimeAsync(2000);
+    const resp = await p;
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.code).toBe("ACE_CREATE");
+      expect(resp.details?.step).toBe("StartEngagement");
+      expect(resp.message).toContain("stateOrRegion");
+    }
+    // The opp was created (id persisted) and then a Sync Error stamped —
+    // the deal is recoverable via the Submit button.
+    const errorWrite = hs.mocks.writeDealProperties.mock.calls.find(
+      (c) => c[1].ace_sync_status === "Sync Error"
+    );
+    expect(errorWrite).toBeDefined();
+    expect(errorWrite![1].ace_sync_error).toMatch(/^StartEngagement:/);
   });
 
   test("missing ace_solutions surfaces solutions precondition", async () => {

@@ -62,7 +62,7 @@ import type { CompanyProps, DealProps } from "../lib/preconditions";
 import { buildCreatePayload, buildUpdatePayload } from "../lib/payload";
 import { generateClientToken, generateEngagementClientToken } from "../lib/client-token";
 import { classifySubmissionMode } from "../lib/submission-mode";
-import { ACEThrottledError } from "../lib/ace";
+import { ACEThrottledError, describeAceError } from "../lib/ace";
 import type { AceClient } from "../lib/ace";
 import type { HubspotClient } from "../lib/hubspot";
 import { ErrorCode, makeError } from "../lib/errors";
@@ -176,6 +176,37 @@ function logStep(
       fn: "share",
       event: `share.step.${step}.${outcome}`,
       dealId,
+      ...extra,
+    })
+  );
+}
+
+/**
+ * Emit a single JSON line when an orchestration step FAILS. Complements
+ * `logStep` (begin/ok/skip only) so create / update / submit failures are
+ * visible in CloudWatch Logs and countable via a metric filter. Before
+ * this, a failure only wrote `ace_sync_error` onto the deal and left no
+ * server-side trace, which made AWS-side rejections (bad country code,
+ * past close date, missing state/solution at submit) invisible to
+ * operators. Never logs payloads or secrets — `message` is the verbatim
+ * AWS service diagnostic, and `code`/`errorType` are enum labels.
+ */
+function logStepFail(
+  step: string,
+  dealId: number,
+  code: ErrorCode,
+  message: string,
+  extra: Record<string, string | number | undefined> = {}
+): void {
+  console.error(
+    JSON.stringify({
+      time: new Date().toISOString(),
+      level: "error",
+      fn: "share",
+      event: `share.step.${step}.fail`,
+      dealId,
+      code,
+      message,
       ...extra,
     })
   );
@@ -801,6 +832,55 @@ function monthlyToContractTotal(
  * `amount` are NOT written — the caller falls back to whatever HubSpot
  * already has.
  */
+/**
+ * Partner-editable INPUT fields that Refresh/Pull must NOT clobber with a
+ * blank from AWS. When AWS returns an empty value for one of these,
+ * `snapshotToProps` drops the key so the existing HubSpot value (or the
+ * partner's fresh edit) survives. Critical for the Submission_Required_Fields
+ * (`ace_involvement_type` / `ace_visibility` especially), which AWS does not
+ * surface via GetAwsOpportunitySummary until the opportunity is submitted.
+ *
+ * The `aws_*` mirror fields and `ace_sync_*` health flags are deliberately
+ * absent — AWS owns those, and writing a blank legitimately clears stale
+ * state. AWS read-only team fields (`ace_aws_account_manager`, …) are also
+ * absent: they carry no partner input, so mirroring AWS's blank is correct.
+ */
+const PRESERVE_LOCAL_WHEN_AWS_BLANK = [
+  "hs_next_step",
+  "ace_additional_comments",
+  "ace_competitor_name",
+  "ace_other_competitor_names",
+  "ace_other_solution_description",
+  "ace_apn_programs",
+  "ace_aws_partition",
+  "ace_customer_use_case",
+  "ace_delivery_model",
+  "ace_sales_activities",
+  "ace_currency_code",
+  "ace_primary_need_from_aws",
+  "ace_opportunity_type",
+  "ace_marketing_source",
+  "ace_aws_funding_used",
+  "ace_marketing_campaign_name",
+  "ace_marketing_use_cases",
+  "ace_marketing_channels",
+  "ace_national_security",
+  "ace_industry",
+  "ace_aws_account_id",
+  "ace_duns",
+  "ace_street_address",
+  "ace_company_name",
+  "ace_country_code",
+  "ace_postal_code",
+  "ace_state_or_region",
+  "ace_city",
+  "ace_website_url",
+  "ace_involvement_type",
+  "ace_visibility",
+  "ace_solutions",
+  "ace_aws_products",
+] as const;
+
 export function snapshotToProps(
   snapshot: AceSnapshot,
   deal?: DealProps
@@ -874,6 +954,27 @@ export function snapshotToProps(
       deal.contract_term__months_
     );
     if (total.length > 0) props.amount = total;
+  }
+
+  // Non-destructive reverse-sync. AWS does not echo every partner input
+  // back: most importantly InvolvementType / Visibility are ABSENT from
+  // GetAwsOpportunitySummary until the opportunity is actually submitted
+  // (the summary is empty during the pre-submission / acceptance
+  // window). Writing "" for those would wipe the values the partner just
+  // entered on the deal — and because they are Submission_Required_Fields
+  // that makes Submit impossible (the edit is erased by the next
+  // Refresh / Pull / Share-writeback before it can be used).
+  //
+  // For every partner-editable INPUT field we therefore DROP the key when
+  // AWS returns blank, leaving the existing HubSpot value (or the
+  // partner's fresh edit) untouched. The aws_* mirror fields and the
+  // ace_sync_* health flags are intentionally NOT in this set — AWS owns
+  // them and a blank there legitimately clears stale state. Reverse-synced
+  // deals still get populated because AWS returns non-empty values for
+  // those, which pass through unchanged.
+  const mutable = props as Record<string, string>;
+  for (const key of PRESERVE_LOCAL_WHEN_AWS_BLANK) {
+    if (mutable[key] === "") delete mutable[key];
   }
   return props;
 }
@@ -1070,7 +1171,7 @@ async function createPath(
   // assignment despite the shapes being structurally compatible.
   const mode = classifySubmissionMode(deal as never);
 
-  const createInput = buildCreatePayload(dealId, deal, company, config);
+  const createInput = buildCreatePayload(dealId, deal, company, mapping, config);
 
   // Step 1: CreateOpportunity. ACE keys idempotency on (operation,
   // ClientToken, body). If a previous create with the same ClientToken
@@ -1242,8 +1343,9 @@ async function createPath(
   if (mode === "Create_And_Submit") {
     await sleep(WRITE_DELAY_MS);
     logStep("start_engagement", "begin", dealId, { oppId: aceOppId });
+    let engagementResp;
     try {
-      await ace.startEngagementFromOpportunityTask({
+      engagementResp = await ace.startEngagementFromOpportunityTask({
         Catalog: ACE_CATALOG,
         Identifier: aceOppId,
         // Use a SEPARATE ClientToken from CreateOpportunity. Reusing the
@@ -1262,6 +1364,28 @@ async function createPath(
         "StartEngagement",
         ErrorCode.ACE_CREATE,
         err,
+        dealId,
+        hs
+      );
+    }
+    // The engagement task can resolve successfully (HTTP 200) yet report
+    // `TaskStatus: "FAILED"` with a validation `Message` — AWS does NOT
+    // throw for submission-time validation failures (e.g. missing
+    // `customer.account.address.stateOrRegion`, no associated solution).
+    // Detect that explicitly so the failure is surfaced + logged instead
+    // of being misreported as a successful submit. The opp was already
+    // created above, so the rep recovers via the Submit button once the
+    // flagged fields are fixed.
+    const taskStatus = (engagementResp as { TaskStatus?: string } | undefined)
+      ?.TaskStatus;
+    if (taskStatus === "FAILED") {
+      const taskMessage =
+        (engagementResp as { Message?: string } | undefined)?.Message ??
+        "Engagement task failed validation";
+      return aceFailure(
+        "StartEngagement",
+        ErrorCode.ACE_CREATE,
+        new Error(taskMessage),
         dealId,
         hs
       );
@@ -1855,8 +1979,16 @@ async function aceFailure(
 ): Promise<ErrorResponse> {
   const isThrottled = err instanceof ACEThrottledError;
   const outCode = isThrottled ? ErrorCode.ACE_THROTTLED : code;
-  const msg =
-    err instanceof Error && err.message ? err.message : "unknown error";
+  const msg = describeAceError(err);
+  // Structured failure log — see logStepFail. Emitted BEFORE the HubSpot
+  // writeback so the CloudWatch trace lands even if the writeback throws.
+  logStepFail(
+    step,
+    dealId,
+    outCode,
+    msg,
+    err instanceof Error && err.name ? { errorType: err.name } : {}
+  );
   try {
     await hs.writeDealProperties(dealId, {
       ace_sync_status: "Sync Error",
