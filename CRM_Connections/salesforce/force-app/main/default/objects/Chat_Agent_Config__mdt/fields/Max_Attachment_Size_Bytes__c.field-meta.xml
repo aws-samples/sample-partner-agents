@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Max_Attachment_Size_Bytes__c</fullName>
+    <label>Max Attachment Size Bytes</label>
+    <type>Number</type>
+    <precision>10</precision>
+    <scale>0</scale>
+    <required>false</required>
+    <unique>false</unique>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+</CustomField>

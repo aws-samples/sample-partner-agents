@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>62.0</apiVersion>
+    <isExposed>true</isExposed>
+    <masterLabel>Partner Central Chat Agent</masterLabel>
+    <description>Chat interface for the Partner Central agent. Surfaces streamed assistant responses, approval prompts for write operations, and attachment uploads anchored to a record context.</description>
+    <targets>
+        <target>lightning__RecordPage</target>
+        <target>lightning__AppPage</target>
+        <target>lightning__HomePage</target>
+        <target>lightning__UtilityBar</target>
+    </targets>
+</LightningComponentBundle>

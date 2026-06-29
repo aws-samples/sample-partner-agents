@@ -1,0 +1,256 @@
+<template>
+    <lightning-card icon-name="utility:chat" title="Partner Central Chat Agent">
+        <!-- Header: sandbox badge is a read-only indicator — the
+             environment is controlled entirely by the AWS Partner CRM
+             Connector's `awsapn__PC_API_Sandbox_Enabled__c` checkbox
+             (under Custom Settings → AWS Partner CRM Connector
+             Settings). Users do not override it per turn; that avoids
+             a whole class of session-catalog mismatch bugs and keeps
+             one canonical source of truth for "AWS vs. Sandbox". -->
+        <div slot="actions">
+            <template if:true={showSandboxBadge}>
+                <lightning-badge label="Sandbox" class="slds-badge_lightest"></lightning-badge>
+            </template>
+        </div>
+
+        <div class="slds-p-horizontal_small">
+            <template if:false={isUtilityBarMode}>
+                <div class="slds-text-body_small slds-text-color_weak slds-p-bottom_x-small">
+                    Context: {recordContextLabel}
+                </div>
+            </template>
+
+            <!-- No record attached: informational only; the chat UI
+                 below still renders so the user can ask general
+                 questions from Home, an App page, or the utility bar. -->
+            <template if:true={isUtilityBarMode}>
+                <div class="slds-text-body_small slds-text-color_weak slds-p-bottom_x-small">
+                    General chat (no record context). Open this component from an opportunity record for a conversation anchored to that opportunity.
+                </div>
+            </template>
+
+            <!-- Error banner (retryable / non-retryable / session expired) -->
+            <template if:true={showError}>
+                <div class="slds-notify slds-notify_alert slds-theme_alert-texture slds-theme_error slds-m-vertical_x-small" role="alert">
+                    <span class="slds-assistive-text">Error</span>
+                    <p>
+                        <lightning-icon icon-name="utility:error" alternative-text="Error" size="x-small"></lightning-icon>
+                        &nbsp;{error.message}
+                    </p>
+                    <template if:true={error.detail}>
+                        <p class="slds-text-body_small slds-m-top_xx-small">{error.detail}</p>
+                    </template>
+                    <div class="slds-m-top_x-small">
+                        <template if:true={errorIsRetryable}>
+                            <lightning-button label="Retry" variant="brand" onclick={handleRetry} class="slds-m-right_x-small"></lightning-button>
+                        </template>
+                        <template if:true={errorIsSessionExpired}>
+                            <lightning-button label="Start new" variant="brand" onclick={handleStartNew} class="slds-m-right_x-small"></lightning-button>
+                        </template>
+                        <lightning-button label="Dismiss" variant="neutral" onclick={handleDismissError}></lightning-button>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Transcript — shown on every surface (record page, Home,
+                 App page, utility bar). Previously this block was
+                 hidden whenever `isUtilityBarMode` was true, which made
+                 the Home/utility-bar placements render an empty header
+                 and a dead-end "no record" message. -->
+            <div class="chat-transcript slds-scrollable_y" role="log" aria-live="polite">
+                    <template if:false={hasTranscript}>
+                        <div class="slds-text-align_center slds-text-color_weak slds-p-vertical_medium">
+                            <p>No messages yet. Type a question below to start the conversation.</p>
+                        </div>
+                    </template>
+
+                    <template for:each={transcript} for:item="entry">
+                        <div key={entry.entryId} class={entry.roleClass}>
+                            <!-- Role label -->
+                            <div class="slds-text-title_caps slds-text-color_weak slds-m-bottom_xx-small">
+                                <template if:true={entry.isUser}>You</template>
+                                <template if:true={entry.isAssistant}>Assistant</template>
+                                <template if:true={entry.isSystem}>System</template>
+                            </div>
+
+                            <!-- Text content (plain text, no HTML) -->
+                            <template if:true={entry.text}>
+                                <div class="slds-text-body_regular chat-entry__text">{entry.text}</div>
+                            </template>
+
+                            <!-- Streaming indicator -->
+                            <template if:true={entry.isStreaming}>
+                                <div class="slds-m-top_xx-small">
+                                    <lightning-icon icon-name="utility:spinner" size="xx-small" alternative-text="Streaming"></lightning-icon>
+                                    <span class="slds-text-body_small slds-text-color_weak slds-m-left_xx-small">Streaming…</span>
+                                </div>
+                            </template>
+
+                            <!-- Interrupted notice -->
+                            <template if:true={entry.interrupted}>
+                                <div class="slds-text-body_small slds-text-color_error slds-m-top_xx-small">
+                                    Connection interrupted. Partial response shown above.
+                                </div>
+                            </template>
+
+                            <!-- Attachments on the entry -->
+                            <template if:true={entry.hasAttachments}>
+                                <ul class="slds-list_horizontal slds-has-inline-block-links slds-m-top_x-small">
+                                    <template for:each={entry.attachments} for:item="att">
+                                        <li key={att.fileName} class="slds-m-right_small slds-text-body_small">
+                                            <lightning-icon icon-name="utility:attach" size="xx-small" alternative-text="Attachment"></lightning-icon>
+                                            <span class="slds-m-left_xx-small">{att.fileName}</span>
+                                            <span class="slds-text-color_weak"> ({att.mimeType})</span>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </template>
+
+                            <!-- Approval cards inline with the entry -->
+                            <template if:true={entry.hasApprovals}>
+                                <template for:each={entry.pendingApprovals} for:item="approval">
+                                    <div key={approval.operationId} class="slds-box slds-theme_warning slds-m-top_small approval-card">
+                                        <div class="slds-grid slds-grid_align-spread">
+                                            <div>
+                                                <h3 class="slds-text-heading_small">Approval Required: {approval.operationName}</h3>
+                                                <p class="slds-text-body_small slds-text-color_weak">
+                                                    Operation Id: {approval.operationId}
+                                                </p>
+                                                <template if:true={approval.targetResourceId}>
+                                                    <p class="slds-text-body_small slds-text-color_weak">
+                                                        Target: {approval.targetResourceId}
+                                                    </p>
+                                                </template>
+                                            </div>
+                                        </div>
+
+                                        <p class="slds-m-top_x-small">{approval.summary}</p>
+
+                                        <template if:true={approval.fieldDiffMarkdown}>
+                                            <div class="slds-m-top_x-small slds-box slds-theme_shade">
+                                                <p class="slds-text-title_caps slds-text-color_weak">Changes</p>
+                                                <pre class="slds-text-body_small approval-card__diff">{approval.fieldDiffMarkdown}</pre>
+                                            </div>
+                                        </template>
+
+                                        <div class="slds-m-top_x-small">
+                                            <lightning-button
+                                                label="Show parameters"
+                                                variant="base"
+                                                icon-name="utility:chevrondown"
+                                                data-operation-id={approval.operationId}
+                                                onclick={handleToggleApprovalDetails}
+                                                class="slds-m-right_x-small">
+                                            </lightning-button>
+                                            <template if:true={approval.isExpanded}>
+                                                <div class="slds-m-top_x-small slds-box slds-theme_shade">
+                                                    <pre class="slds-text-body_small approval-card__params">{approval.paramsPayloadJson}</pre>
+                                                </div>
+                                            </template>
+                                        </div>
+
+                                        <!-- Decision controls -->
+                                        <template if:true={approval.outcome}>
+                                            <div class="slds-m-top_small slds-text-body_small slds-text-color_success">
+                                                {approval.outcome}
+                                            </div>
+                                        </template>
+                                        <template if:false={approval.outcome}>
+                                            <div class="slds-m-top_small">
+                                                <lightning-button
+                                                    label="Approve"
+                                                    variant="brand"
+                                                    disabled={approval.isDeciding}
+                                                    data-operation-id={approval.operationId}
+                                                    onclick={handleApprove}
+                                                    class="slds-m-right_x-small">
+                                                </lightning-button>
+                                                <lightning-button
+                                                    label="Reject"
+                                                    variant="destructive"
+                                                    disabled={approval.isDeciding}
+                                                    data-operation-id={approval.operationId}
+                                                    onclick={handleReject}>
+                                                </lightning-button>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+                            </template>
+
+                            <!-- Per-entry error -->
+                            <template if:true={entry.errorMessage}>
+                                <div class="slds-text-color_error slds-text-body_small slds-m-top_xx-small">
+                                    {entry.errorMessage}
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+            </div>
+
+            <!-- Input area -->
+            <div class="slds-m-top_small">
+                    <lightning-textarea
+                        name="chatInput"
+                        label="Message"
+                        value={inputText}
+                        onchange={handleInputChange}
+                        onkeydown={handleInputKeydown}
+                        placeholder="Ask the agent… (Enter to send, Shift+Enter for a new line)"
+                        variant="label-hidden">
+                    </lightning-textarea>
+
+                    <!--
+                        Attachment picker. Files are validated client-side
+                        here and again server-side (AttachmentValidator),
+                        then uploaded to the Partner Central ephemeral S3
+                        bucket by McpClient.uploadAttachmentToS3 and sent as
+                        `document` content blocks on the next sendMessage.
+                    -->
+                    <div class="slds-m-top_x-small">
+                        <lightning-input
+                            type="file"
+                            label="Attachments"
+                            accept={acceptedMimeTypes}
+                            multiple
+                            onchange={handleFileChange}
+                            variant="label-hidden">
+                        </lightning-input>
+                    </div>
+
+                    <template if:true={hasPendingFiles}>
+                        <ul class="slds-list_horizontal slds-m-top_x-small">
+                            <template for:each={pendingFiles} for:item="f">
+                                <li key={f.fileName} class="slds-m-right_small slds-text-body_small">
+                                    <lightning-icon icon-name="utility:attach" size="xx-small" alternative-text="Attachment"></lightning-icon>
+                                    <span class="slds-m-left_xx-small">{f.fileName}</span>
+                                    <lightning-button-icon
+                                        icon-name="utility:close"
+                                        size="xx-small"
+                                        alternative-text="Remove"
+                                        variant="bare"
+                                        data-file-name={f.fileName}
+                                        onclick={handleRemovePendingFile}
+                                        class="slds-m-left_xx-small">
+                                    </lightning-button-icon>
+                                </li>
+                            </template>
+                        </ul>
+                    </template>
+                    <div class="slds-m-top_small slds-grid slds-grid_align-spread">
+                        <lightning-button
+                            label="Send"
+                            variant="brand"
+                            onclick={handleSubmit}
+                            disabled={isSendDisabled}>
+                        </lightning-button>
+                        <lightning-button
+                            label="Start new conversation"
+                            variant="neutral"
+                            onclick={handleStartNew}>
+                        </lightning-button>
+                    </div>
+            </div>
+        </div>
+    </lightning-card>
+</template>

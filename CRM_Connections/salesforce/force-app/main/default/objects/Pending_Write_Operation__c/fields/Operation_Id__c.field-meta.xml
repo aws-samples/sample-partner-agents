@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Operation_Id__c</fullName>
+    <label>Operation Id</label>
+    <type>Text</type>
+    <length>64</length>
+    <unique>true</unique>
+    <externalId>true</externalId>
+    <required>true</required>
+    <caseSensitive>true</caseSensitive>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+</CustomField>

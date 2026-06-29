@@ -1,0 +1,29 @@
+.chat-transcript {
+    max-height: 480px;
+    padding: 0.25rem;
+}
+
+.chat-entry__text {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.chat-entry_user {
+    background-color: #f3f6f9;
+}
+
+.chat-entry_assistant {
+    background-color: #ffffff;
+    border-left: 3px solid #1589ee;
+}
+
+.chat-entry_system {
+    font-style: italic;
+}
+
+.approval-card__diff,
+.approval-card__params {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
