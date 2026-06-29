@@ -1,10 +1,32 @@
-# infra/ — AWS backend for the ACE Share / Refresh card
+# infra: AWS backend for the ACE Share / Refresh card
 
 This directory contains everything needed to deploy and operate the AWS backend that powers the HubSpot Custom Card (Share and Refresh buttons on the deal record sidebar). Business logic lives in `../backend/`; this directory is CloudFormation + shell scripts only.
 
 ## Architecture (quick recap)
 
-The HubSpot Custom Card calls `hubspot.fetch("<apiBaseUrl>/share")` (or `…/refresh`), which hits an API Gateway HTTP API and runs the Share / Refresh Lambdas directly. Each Lambda verifies HubSpot's v3 HMAC signature inline (REQUEST authorizers can't see the request body, which the v3 signature covers). Credentials (ACE access key, HubSpot private-app token, HubSpot client secret) live in a single Secrets Manager blob. See [`../docs/architecture.md`](../docs/architecture.md) for the full design and request flows.
+The HubSpot Custom Card calls `hubspot.fetch("<apiBaseUrl>/share")` (or `.../refresh`), which hits an API Gateway HTTP API and runs the Share / Refresh Lambdas directly. Each Lambda verifies HubSpot's v3 HMAC signature inline (REQUEST authorizers can't see the request body, which the v3 signature covers). Credentials (ACE access key, HubSpot private-app token, HubSpot client secret) live in a single Secrets Manager blob. See [`../docs/architecture.md`](../docs/architecture.md) for the full design and request flows.
+
+## One stack per catalog and HubSpot portal
+
+The reverse sync from AWS to HubSpot is driven by an Amazon EventBridge rule that matches `aws.partnercentral-selling` opportunity events and invokes the Pull Lambda, which then creates or refreshes the matching HubSpot deal. That rule filters on the catalog, which in this sample is `Sandbox`.
+
+The important thing to remember is that only one deployed stack should own a given pairing of catalog and HubSpot portal. If you deploy two stacks that filter the same catalog and write into the same HubSpot portal, both Pull Lambdas fire for every opportunity event and each one creates its own HubSpot deal, so you end up with a duplicate deal for every opportunity. The two stacks keep separate lock tables, so they cannot deduplicate against each other.
+
+This is easy to trip over when you run an `--env-suffix dev` stack next to the canonical stack, because both default to the Sandbox catalog. Two Sandbox stacks pointing at the same portal will duplicate everything, so either give each stack its own HubSpot portal or keep to a single stack. A Sandbox stack and a production stack are fine even on the same portal, because they filter different catalogs and therefore see different events.
+
+If you do see duplicate deals, list the rules to find how many are enabled for the same catalog, then disable or remove the extra stack's rule. Disabling the rule is a reversible stop gap, and deleting the redundant stack is the permanent fix.
+
+```bash
+aws events list-rules --query "Rules[?contains(Name,'PullEventRule')].{Name:Name,State:State}"
+aws events disable-rule --name <the-redundant-rule>
+aws cloudformation delete-stack --stack-name <redundant-stack>
+```
+
+### Adapting for the production catalog
+
+This sample is wired for the Sandbox catalog, and moving it to the production AWS catalog is a change you make yourself. The catalog is set in three places that all need to change together. First, `backend/lib/config.ts` sets `ACE_CATALOG` to `Sandbox`. Second, `infra/cloudformation.yaml` sets the catalog the Pull rule filters on, in the rule's event pattern. Third, the same template attaches the Lambda IAM role's managed policy, and the Sandbox build uses the Sandbox scoped Partner Central policy. For production you would use a policy without the Sandbox restriction, such as `AWSPartnerCentralOpportunityManagement` or `AWSPartnerCentralFullAccess`.
+
+Once a Sandbox stack and a production stack run on different catalogs their EventBridge rules match different events, so they will not duplicate even if they share a HubSpot portal. Even so, a separate HubSpot portal for production is the cleaner choice. If you want to avoid editing code at all, a reasonable enhancement is to promote the catalog to a CloudFormation parameter and a Lambda environment variable, but until that exists the three edits above are the checklist.
 
 ## Prerequisites
 
@@ -22,7 +44,7 @@ The HubSpot Custom Card calls `hubspot.fetch("<apiBaseUrl>/share")` (or `…/ref
   ```
 - **Region**: `us-east-1` by default. Override with `AWS_REGION=...`.
 - **Stack name**: `ace-share-refresh` by default. Override with `STACK_NAME=...`.
-- **Environment suffix** (optional): pass `--env-suffix dev` (or set `ENV_SUFFIX=dev`) to append a suffix to the stack name and every globally-named resource (Lambdas, IAM role, log groups, Secrets Manager secret, DynamoDB table, HTTP API name, EventBridge rule). Empty default preserves canonical names. Lets dev and prod coexist in one AWS account. See `../docs/architecture.md` § Parallel environments.
+- **Environment suffix** (optional): pass `--env-suffix dev` (or set `ENV_SUFFIX=dev`) to append a suffix to the stack name and every globally-named resource (Lambdas, IAM role, log groups, Secrets Manager secret, DynamoDB table, HTTP API name, EventBridge rule). The empty default keeps the canonical names, and a suffix lets a dev and a prod stack coexist in one AWS account. Note that a suffixed stack and the canonical stack both default to the Sandbox catalog, so do not point both at the same HubSpot portal or you will get duplicate deals. The section [One stack per catalog and HubSpot portal](#one-stack-per-catalog-and-hubspot-portal) above explains why. See also the Parallel environments section in [`../docs/architecture.md`](../docs/architecture.md).
 - **Node.js 22** with `npm` on your `PATH` (for building the Lambda bundles and running the HubSpot CLI).
 - **`zip` CLI** (macOS and Linux ship this by default).
 - **Python 3** (used by `deploy.sh` and `set-secrets.sh` for JSON merging).
@@ -42,7 +64,7 @@ The HubSpot Custom Card calls `hubspot.fetch("<apiBaseUrl>/share")` (or `…/ref
 ### First-time setup
 
 ```bash
-# Optional — pick your AWS profile / region / stack name. All have sensible
+# Optional. Pick your AWS profile / region / stack name. All have sensible
 # defaults so a partner with a single AWS profile can skip these.
 export AWS_PROFILE=my-profile
 export AWS_REGION=us-east-1
@@ -55,7 +77,7 @@ export STACK_NAME=ace-share-refresh
 ./infra/deploy.sh
 
 # 2. Populate the Secrets Manager blob. Prompts for the required keys with
-#    hidden stdin — tokens never land in scrollback or logs.
+#    hidden stdin, so tokens never land in scrollback or logs.
 ./infra/set-secrets.sh
 
 # 3. Provision HubSpot custom properties (one-time).
@@ -101,8 +123,8 @@ aws logs filter-log-events \
 ### Rotate a secret
 
 1. **Mint the new value** in its source system.
-   - HubSpot private-app token → HubSpot Settings → Private Apps.
-   - AWS ACE IAM access key → AWS IAM console, on the IAM user you provisioned for the connector.
+   - HubSpot private-app token, in HubSpot Settings, Private Apps.
+   - AWS ACE IAM access key, in the AWS IAM console, on the IAM user you provisioned for the connector.
 2. **Push it**:
    ```bash
    ./infra/set-secrets.sh HUBSPOT_PRIVATE_APP_TOKEN
@@ -126,9 +148,9 @@ aws logs filter-log-events \
 
 ## Operational note: rotating any token that touched a chat or shared log
 
-Treat any token that has ever been pasted into a chat conversation, screenshot, or shared log as compromised — including HubSpot Private App tokens, HubSpot Personal Access Keys, AWS access keys, and HubSpot App UIDs. Mint fresh values and push them via `set-secrets.sh` (which reads from hidden stdin so the new value never lands in scrollback or logs).
+Treat any token that has ever been pasted into a chat conversation, screenshot, or shared log as compromised, including HubSpot Private App tokens, HubSpot Personal Access Keys, AWS access keys, and HubSpot App UIDs. Mint fresh values and push them via `set-secrets.sh` (which reads from hidden stdin so the new value never lands in scrollback or logs).
 
-The same rule applies to the HubSpot `personalAccessKey` stored in `hubspot-card/hubspot.config.yml` — that file is a local CLI auth artifact used only by `hs project upload` on your workstation. It is gitignored, so it never ships with the repo, but you should still rotate it periodically and never paste its value into a chat or commit message.
+The same rule applies to the HubSpot `personalAccessKey` stored in `hubspot-card/hubspot.config.yml`. That file is a local CLI auth artifact used only by `hs project upload` on your workstation. It is gitignored, so it never ships with the repo, but you should still rotate it periodically and never paste its value into a chat or commit message.
 
 ## Smoke test (manual, end-to-end)
 
@@ -161,10 +183,10 @@ Run this sequence against the ACE Sandbox catalog after a fresh deploy to confir
    ```bash
    cd hubspot-card && hs project upload
    ```
-   Expect no "plan doesn't include serverless functions" error — this project has no `app.functions` block.
+   Expect no "plan doesn't include serverless functions" error, because this project has no `app.functions` block.
 
 6. **Open a test deal in HubSpot** with:
-   - `description` ≥ 20 chars (used as `Project.CustomerBusinessProblem`)
+   - `description` of at least 20 chars (used as `Project.CustomerBusinessProblem`)
    - `closedate` set
    - `amount > 0`
    - An associated company with a country code
@@ -175,13 +197,13 @@ Run this sequence against the ACE Sandbox catalog after a fresh deploy to confir
    ```bash
    ./infra/tail-logs.sh share
    ```
-   Expect `share.create.begin` → `share.create.success`. In HubSpot: a success toast with the new opportunity ID, the card transitions to show both Share + Refresh, `ace_opportunity_id` / `ace_sync_status=pending_review` / `ace_last_sync` all populated.
+   Expect `share.create.begin` then `share.create.success`. In HubSpot: a success toast with the new opportunity ID, the card transitions to show both Share + Refresh, `ace_opportunity_id` / `ace_sync_status=pending_review` / `ace_last_sync` all populated.
 
 8. **Click Refresh** (same deal, immediately)
    ```bash
    ./infra/tail-logs.sh refresh
    ```
-   Expect `refresh.begin` → `refresh.success`. The toast reads `Refreshed — stage <Label>, <Status>`. `ace_sync_status` is updated; `ace_last_sync` is updated.
+   Expect `refresh.begin` then `refresh.success`. The toast confirms the refreshed stage and status. `ace_sync_status` is updated; `ace_last_sync` is updated.
 
 9. **Edit the deal `amount` and click Share** Expect `share.update.success`. `ace_opportunity_id` is unchanged; `ace_sync_status = Synced`; `ace_last_sync` updated.
 
@@ -198,20 +220,20 @@ Run this sequence against the ACE Sandbox catalog after a fresh deploy to confir
 
 ## Cost
 
-At projected volume (~300 Share clicks per month), the stack costs ~$0.45/month:
+At projected volume (about 300 Share clicks per month), the stack costs about $0.45/month:
 
 - Lambda + API Gateway + Logs + Secrets Manager API calls: well under $0.10/month.
 - Secrets Manager secret: $0.40/month flat (the dominant line item).
 - CloudWatch Logs storage: negligible at 1 MB/month.
 
-See [`../docs/architecture.md`](../docs/architecture.md) § Cost model for the detailed breakdown.
+See the Cost model section in [`../docs/architecture.md`](../docs/architecture.md) for the detailed breakdown.
 
 ## Troubleshooting
 
 | Symptom                                              | Check                                                                         |
 |------------------------------------------------------|-------------------------------------------------------------------------------|
-| Card shows "Authorization failed"                    | `./infra/tail-logs.sh share` or `./infra/tail-logs.sh refresh` — look for `auth.deny` lines with `reason=...` |
+| Card shows "Authorization failed"                    | `./infra/tail-logs.sh share` or `./infra/tail-logs.sh refresh`, then look for `auth.deny` lines with `reason=...` |
 | Card shows "Configuration error: missing secrets"    | `aws secretsmanager get-secret-value --secret-id crm-connector/ace-share`     |
-| Share / Refresh stalls for 20+ seconds               | `./infra/tail-logs.sh share` — ACE timeout? HubSpot timeout?                  |
-| `hs project upload` says "plan doesn't include …"    | The card has an `app.functions` entry it shouldn't — check `src/app/app.json` |
-| Stack update fails with "Authorization header …"     | The authorizer cache retains an old decision — wait 60s or redeploy           |
+| Share / Refresh stalls for 20+ seconds               | `./infra/tail-logs.sh share`, then check for an ACE timeout or a HubSpot timeout |
+| `hs project upload` says "plan doesn't include ..."  | The card has an `app.functions` entry it shouldn't, so check `src/app/app.json` |
+| Stack update fails with "Authorization header ..."   | The authorizer cache retains an old decision, so wait 60s or redeploy         |

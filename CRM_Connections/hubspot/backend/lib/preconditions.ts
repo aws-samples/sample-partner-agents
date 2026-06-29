@@ -76,6 +76,7 @@
 
 import type { StageMapping } from "./stage-mapping";
 import { forwardMap } from "./stage-mapping";
+import { normalizeCountryCode } from "./country";
 
 /**
  * HubSpot deal property bag as read via the CRM API. Values are strings in
@@ -102,18 +103,25 @@ export type CompanyProps =
       state?: string;
       zip?: string;
       city?: string;
+      website?: string;
+      domain?: string;
       [k: string]: string | undefined;
     }
   | undefined;
 
 /** Keys identifying each precondition rule. Appear in the result array when violated. */
 export type PreconditionKey =
+  | "dealName"
   | "closedate"
+  | "closeDateFuture"
   | "amount"
+  | "currencyCode"
   | "countryCode"
   | "stateOrRegion"
   | "postalCode"
+  | "websiteUrl"
   | "descriptionLength"
+  | "industry"
   | "stageMappable"
   | "solutions"
   | "closedLostReason";
@@ -124,12 +132,17 @@ export type PreconditionKey =
  * on determinism.
  */
 export const PRECONDITION_KEYS: readonly PreconditionKey[] = [
+  "dealName",
   "closedate",
+  "closeDateFuture",
   "amount",
+  "currencyCode",
   "countryCode",
   "stateOrRegion",
   "postalCode",
+  "websiteUrl",
   "descriptionLength",
+  "industry",
   "stageMappable",
   "solutions",
   "closedLostReason",
@@ -139,6 +152,49 @@ export const PRECONDITION_KEYS: readonly PreconditionKey[] = [
 const MIN_DESCRIPTION_LENGTH = 20;
 
 /**
+ * Parse a HubSpot `closedate` value into epoch milliseconds for the
+ * future-date check. HubSpot surfaces dates either as an ISO 8601 string
+ * (`"2026-12-31"` / `"2026-12-31T00:00:00.000Z"`) or, for datetime-typed
+ * properties via the UI-extensions API, as epoch-ms numeric strings.
+ * Returns `undefined` when the value can't be parsed — callers skip the
+ * future check in that case and let AWS surface the error.
+ */
+function parseCloseDateMs(raw: string): number | undefined {
+  const s = raw.trim();
+  if (!s) return undefined;
+  // ISO date-like prefix — anchor on the date portion at UTC midnight so
+  // the comparison is timezone-stable.
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const ms = Date.parse(`${s.slice(0, 10)}T00:00:00Z`);
+    return Number.isNaN(ms) ? undefined : ms;
+  }
+  // Epoch-ms fallback (numeric string).
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * True iff `closeMs` falls on a UTC calendar date strictly after `now`'s
+ * UTC date. AWS requires a *future* TargetCloseDate, so today does not
+ * qualify. Compares date-only (UTC midnight) to avoid intra-day and
+ * timezone flakiness.
+ */
+function isCloseDateFuture(closeMs: number, now: Date): boolean {
+  const close = new Date(closeMs);
+  const closeUtc = Date.UTC(
+    close.getUTCFullYear(),
+    close.getUTCMonth(),
+    close.getUTCDate()
+  );
+  const todayUtc = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  );
+  return closeUtc > todayUtc;
+}
+
+/**
  * Validate the five create-path preconditions. Returns the list of violated
  * rule keys in `PRECONDITION_KEYS` order — an empty array means the deal is
  * ready to share.
@@ -146,14 +202,34 @@ const MIN_DESCRIPTION_LENGTH = 20;
 export function validatePreconditions(
   deal: DealProps,
   company: CompanyProps,
-  stageMapping: StageMapping
+  stageMapping: StageMapping,
+  now: Date = new Date()
 ): PreconditionKey[] {
   const violations: PreconditionKey[] = [];
 
-  // 1. closedate must be set (non-empty, non-whitespace).
+  // 0. dealname must be set — AWS requires Project.Title (non-empty) and
+  //    the deal name is its only source now that the canned "Partner
+  //    Opportunity" default is removed.
+  const dealName = deal.dealname?.trim();
+  if (!dealName) {
+    violations.push("dealName");
+  }
+
+  // 1. closedate must be set (non-empty, non-whitespace) AND, when set,
+  //    resolve to a date strictly in the future. AWS Partner Central's
+  //    CreateOpportunity rejects a past/today TargetCloseDate with
+  //    `BUSINESS_VALIDATION_EXCEPTION ... should be a future date`
+  //    (confirmed against the Sandbox API), so we fail fast here rather
+  //    than round-tripping. An unparseable-but-present value skips the
+  //    future check (presence already passed); AWS handles that edge.
   const closedate = deal.closedate?.trim();
   if (!closedate) {
     violations.push("closedate");
+  } else {
+    const closeMs = parseCloseDateMs(closedate);
+    if (closeMs !== undefined && !isCloseDateFuture(closeMs, now)) {
+      violations.push("closeDateFuture");
+    }
   }
 
   // 2. amount must parse as a positive, finite number. HubSpot stores amounts
@@ -165,17 +241,30 @@ export function validatePreconditions(
     violations.push("amount");
   }
 
-  // 3. Customer country code must be set somewhere. Source order:
-  //    deal-level override (`ace_country_code`) → primary associated
-  //    company (`hs_country_code`). The deal-level override is the
-  //    escape hatch for deals reverse-synced from AWS that have no
-  //    associated HubSpot company; the company association remains
-  //    the canonical source for deals created in HubSpot.
-  const countryCode =
+  // 2b. Currency code — AWS requires ExpectedCustomerSpend.CurrencyCode
+  //     (no silent default anymore). Sourced from the deal's
+  //     `ace_currency_code`; the rep sets it per deal.
+  const currencyCode = deal.ace_currency_code?.trim();
+  if (!currencyCode) {
+    violations.push("currencyCode");
+  }
+
+  // 3. Customer country code must resolve to a valid ISO 3166-1 alpha-2
+  //    code AWS accepts. Source order: deal-level override
+  //    (`ace_country_code`) -> primary associated company
+  //    (`hs_country_code`). The value is normalised (e.g. "United
+  //    States" -> "US") because the field is free-text and AWS rejects
+  //    non-enum values with `INVALID_ENUM_VALUE`. A present-but-
+  //    unresolvable value (e.g. "Atlantis") is treated the same as
+  //    missing. The normalised code also drives the US-only state rule
+  //    below — without normalisation, "United States" would silently
+  //    skip that check and then fail at AWS submission.
+  const rawCountry =
     deal.ace_country_code?.trim() ||
     company?.hs_country_code?.trim() ||
     "";
-  if (!countryCode) {
+  const normalizedCountry = normalizeCountryCode(rawCountry);
+  if (!normalizedCountry) {
     violations.push("countryCode");
   }
 
@@ -185,7 +274,7 @@ export function validatePreconditions(
   //    demanding it from operators outside the US would be busy-work
   //    that doesn't change ACE's behaviour. Same source order as the
   //    other customer fields: deal override → company.
-  if (countryCode === "US") {
+  if (normalizedCountry === "US") {
     const stateOrRegion =
       deal.ace_state_or_region?.trim() ||
       company?.state?.trim() ||
@@ -206,11 +295,30 @@ export function validatePreconditions(
     violations.push("postalCode");
   }
 
+  // 5b. Website URL — AWS requires Customer.Account.WebsiteUrl. Source
+  //     order mirrors the payload builder: deal `ace_website_url`, then
+  //     the associated company's `website` / `domain`.
+  const websiteUrl =
+    deal.ace_website_url?.trim() ||
+    company?.website?.trim() ||
+    company?.domain?.trim() ||
+    "";
+  if (!websiteUrl) {
+    violations.push("websiteUrl");
+  }
+
   // 6. description trimmed length ≥ 20 (HubSpot's built-in deal
   //    description; sent to ACE as `Project.CustomerBusinessProblem`).
   const description = deal.description ?? "";
   if (description.trim().length < MIN_DESCRIPTION_LENGTH) {
     violations.push("descriptionLength");
+  }
+
+  // 6b. Industry — AWS requires Customer.Account.Industry (no silent
+  //     default anymore). Sourced from the deal's `ace_industry`.
+  const industry = deal.ace_industry?.trim();
+  if (!industry) {
+    violations.push("industry");
   }
 
   // 7. dealstage must map to a known ACE stage via stageMapping.

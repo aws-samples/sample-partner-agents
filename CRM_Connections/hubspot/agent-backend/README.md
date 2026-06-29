@@ -126,7 +126,7 @@ One JSON object at `crm-connector/ace-agent` (configurable via `ACE_AGENT_SECRET
 |-----|-----------|---------|
 | `HUBSPOT_CLIENT_SECRET` | yes | HubSpot v3 HMAC verification key |
 | `HUBSPOT_PRIVATE_APP_TOKEN` | optional | Enables the deal-context preamble. Without it, queries run without auto-injected context. |
-| `ACE_AGENT_CATALOG` | optional | `Sandbox` (default) or `AWS`. Flip to `AWS` when ready for production traffic. |
+| `ACE_AGENT_CATALOG` | optional | `Sandbox` (default) or `AWS`. Flip to `AWS` if you adapt this sample for the production catalog. |
 
 The agent NEVER receives long-lived ACE access keys. SigV4 signing uses the Lambda execution role's temporary credentials at runtime via `@aws-sdk/credential-provider-node`'s `defaultProvider`.
 
@@ -137,7 +137,7 @@ The Lambda execution role gets two AWS-managed policies (configured in `../agent
 - `AWSMcpServiceActionsFullAccess` — grants `partnercentral:UseSession` and all MCP-scoped actions (`aws:IsMcpServiceAction == true`).
 - `AWSPartnerCentralSandboxFullAccess` — grants the data-access actions (`Get*`, `List*`, `UpdateOpportunity`, etc.) scoped to the Sandbox catalog only.
 
-To enable production catalog access, swap `AWSPartnerCentralSandboxFullAccess` for `AWSPartnerCentralFullAccess` in the CloudFormation template and also update `ACE_AGENT_CATALOG` to `"AWS"`.
+To adapt this sample for the production (`AWS`) catalog, swap `AWSPartnerCentralSandboxFullAccess` for `AWSPartnerCentralFullAccess` in the CloudFormation template and also update `ACE_AGENT_CATALOG` to `"AWS"`.
 
 ## What's intentionally NOT here
 

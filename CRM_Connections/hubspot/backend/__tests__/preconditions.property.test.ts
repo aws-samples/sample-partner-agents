@@ -1,4 +1,4 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import fc from "fast-check";
 import {
   validatePreconditions,
@@ -10,6 +10,19 @@ import {
   type PreconditionKey,
 } from "../lib/preconditions";
 import type { StageMapping } from "../lib/stage-mapping";
+
+// Pin "now" so the future-close-date precondition is deterministic
+// regardless of when the suite runs. validatePreconditions defaults its
+// `now` argument to `new Date()`, which the fake timer below controls —
+// so no call site needs to thread the clock through explicitly.
+const FIXED_NOW = new Date("2026-06-24T00:00:00.000Z");
+beforeAll(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(FIXED_NOW);
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 // Feature: hubspot-ace-share-refresh-buttons
 // Property 1: validatePreconditions returns exactly the set of violated rules.
@@ -37,15 +50,19 @@ const FIXED_MAPPING: StageMapping = {
 // constrained to values that actually violate the rule under test; "valid"
 // arbitraries are constrained to values that cannot violate it.
 
-// closedate — invalid: empty/whitespace/undefined; valid: any non-empty
-// trimmed string (ISO date shape is not checked by the validator).
+// closedate — invalid: empty/whitespace/undefined; valid: a non-empty
+// trimmed string that is EITHER a future date (so the future-date rule
+// passes) OR unparseable (so the future-date rule is skipped). Past
+// parseable dates are excluded here because they'd trigger the separate
+// `closeDateFuture` rule, which this arbitrary doesn't model — that rule
+// has dedicated deterministic coverage below.
 const arbCloseDate = () =>
   fc.oneof(
     fc
       .constantFrom("", "   ", undefined as unknown as string)
       .map((v) => ({ closedate: v, valid: false })),
     fc
-      .constantFrom("2025-06-15", "2030-01-01T00:00:00.000Z", "tomorrow")
+      .constantFrom("2027-01-01", "2030-01-01T00:00:00.000Z", "tomorrow")
       .map((v) => ({ closedate: v, valid: true })),
   );
 
@@ -228,6 +245,13 @@ describe("validatePreconditions — Property 1", () => {
             dealstage: st.stage,
             ace_solutions: sol.solutions,
             ace_closed_lost_reason: clr.reason,
+            // New always-required fields, held valid so they don't add
+            // violations to the modeled set (they have dedicated coverage
+            // elsewhere). dealName / currencyCode / websiteUrl / industry.
+            dealname: "Acme Deal",
+            ace_currency_code: "USD",
+            ace_website_url: "https://acme.com",
+            ace_industry: "Software and Internet",
           };
           const violations = validatePreconditions(
             deal,
@@ -278,6 +302,13 @@ describe("validatePreconditions — Property 1", () => {
             dealstage: st.stage,
             ace_solutions: sol.solutions,
             ace_closed_lost_reason: clr.reason,
+            // New always-required fields, held valid so they don't add
+            // violations to the modeled set (they have dedicated coverage
+            // elsewhere). dealName / currencyCode / websiteUrl / industry.
+            dealname: "Acme Deal",
+            ace_currency_code: "USD",
+            ace_website_url: "https://acme.com",
+            ace_industry: "Software and Internet",
           };
           const violations = validatePreconditions(
             deal,
@@ -297,12 +328,16 @@ describe("validatePreconditions — Property 1", () => {
   test("empty violations iff all preconditions hold", () => {
     // All valid → empty violations.
     const deal: DealProps = {
-      closedate: "2025-06-15",
+      closedate: "2027-06-15",
       amount: "5000",
       description:
         "A sufficiently long business problem description here.",
       dealstage: "qualified",
       ace_solutions: "S-0000001",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
     };
     const company: CompanyProps = {
       name: "Acme",
@@ -437,6 +472,10 @@ describe("validatePreconditions — Property 1", () => {
       ace_postal_code: "98101",
       ace_state_or_region: "WA",
       ace_company_name: "Reverse-synced Co",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
     };
     expect(validatePreconditions(deal, undefined, FIXED_MAPPING)).toEqual([]);
   });
@@ -449,6 +488,10 @@ describe("validatePreconditions — Property 1", () => {
       amount: "1000",
       description: "A long enough description for ACE precondition.",
       ace_solutions: "S-0000010",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
     };
     const company = {
       hs_country_code: "IE",
@@ -466,6 +509,10 @@ describe("validatePreconditions — Property 1", () => {
       ace_solutions: "S-0000010",
       ace_country_code: "AU",
       ace_postal_code: "2000",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
     };
     expect(validatePreconditions(deal, undefined, FIXED_MAPPING)).toEqual([]);
   });
@@ -479,6 +526,10 @@ describe("validatePreconditions — Property 1", () => {
       ace_solutions: "S-0000010",
       ace_country_code: "US",
       ace_postal_code: "98101",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
     };
     // Neither source has a state — violation surfaces.
     expect(
@@ -492,6 +543,97 @@ describe("validatePreconditions — Property 1", () => {
         FIXED_MAPPING,
       ),
     ).toEqual([]);
+  });
+
+  test("closeDateFuture fires for past/today dates and clears for future", () => {
+    // now is pinned to 2026-06-24 by the fake timer.
+    const base: DealProps = {
+      dealstage: "qualified",
+      amount: "1000",
+      description: "A long enough description for ACE precondition.",
+      ace_solutions: "S-0000010",
+      ace_country_code: "US",
+      ace_state_or_region: "WA",
+      ace_postal_code: "98101",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
+    };
+    // Past date → closeDateFuture violation (not a plain `closedate` one).
+    const past = validatePreconditions(
+      { ...base, closedate: "2026-06-23" },
+      undefined,
+      FIXED_MAPPING,
+    );
+    expect(past).toContain("closeDateFuture");
+    expect(past).not.toContain("closedate");
+    // Today is not "future" — AWS rejects it, so we do too.
+    expect(
+      validatePreconditions(
+        { ...base, closedate: "2026-06-24" },
+        undefined,
+        FIXED_MAPPING,
+      ),
+    ).toContain("closeDateFuture");
+    // Future date → no close-date violation of either kind.
+    const future = validatePreconditions(
+      { ...base, closedate: "2026-06-25" },
+      undefined,
+      FIXED_MAPPING,
+    );
+    expect(future).not.toContain("closeDateFuture");
+    expect(future).not.toContain("closedate");
+    // Missing date → presence rule fires, future rule does not.
+    const missing = validatePreconditions(
+      { ...base, closedate: "" },
+      undefined,
+      FIXED_MAPPING,
+    );
+    expect(missing).toContain("closedate");
+    expect(missing).not.toContain("closeDateFuture");
+  });
+
+  test("country display names normalise; unresolvable values fail", () => {
+    const base: DealProps = {
+      dealstage: "qualified",
+      closedate: "2027-06-15",
+      amount: "1000",
+      description: "A long enough description for ACE precondition.",
+      ace_solutions: "S-0000010",
+      ace_postal_code: "98101",
+      ace_state_or_region: "WA",
+      dealname: "Acme Deal",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
+      ace_industry: "Software and Internet",
+    };
+    // "United States" normalises to US → no countryCode violation, and the
+    // US-only state rule still engages (state is present here, so clean).
+    expect(
+      validatePreconditions(
+        { ...base, ace_country_code: "United States" },
+        undefined,
+        FIXED_MAPPING,
+      ),
+    ).toEqual([]);
+    // A US display-name deal with NO state must still fail stateOrRegion —
+    // proving normalisation re-enables the check that "=== US" used to skip.
+    expect(
+      validatePreconditions(
+        { ...base, ace_country_code: "United States", ace_state_or_region: "" },
+        undefined,
+        FIXED_MAPPING,
+      ),
+    ).toContain("stateOrRegion");
+    // An unresolvable country value is treated as a countryCode violation.
+    expect(
+      validatePreconditions(
+        { ...base, ace_country_code: "Atlantis" },
+        undefined,
+        FIXED_MAPPING,
+      ),
+    ).toContain("countryCode");
   });
 });
 

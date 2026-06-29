@@ -20,6 +20,20 @@ import {
  * Requirements covered: 1.1, 1.2, 1.3, 5.1, 5.2, 5.3, 7.1, 11.2, 11.3
  */
 
+// All five Submission_Required_Fields populated with valid values. The
+// 16-cell table varies ace_involvement_type / ace_visibility; the other
+// three are held populated here so they never contribute to the missing
+// set under those table cells. Tests that exercise the new fields do so
+// explicitly.
+const VALID_SUBMISSION_FIELDS = {
+  ace_involvement_type: "Co-Sell",
+  ace_visibility: "Full",
+  ace_delivery_model: "SaaS or PaaS",
+  ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+  ace_customer_use_case: "Business Applications & Contact Center",
+  ace_sales_activities: "Initialized discussions with customer",
+} as const;
+
 // --- Field-state dimension --------------------------------------------------
 
 type FieldStateName =
@@ -116,6 +130,7 @@ describe("submission-mode classifier", () => {
         const expected = expectedMode(field, status);
         test(`${field.name} × aws_review_status="${status.value}" → ${expected}`, () => {
           const deal: SubmissionInputs = {
+            ...VALID_SUBMISSION_FIELDS,
             ace_involvement_type: field.ace_involvement_type,
             ace_visibility: field.ace_visibility,
             aws_review_status: status.value,
@@ -130,6 +145,7 @@ describe("submission-mode classifier", () => {
     for (const field of FIELD_STATES) {
       test(`${field.name} → [${field.expectedMissing.join(", ")}]`, () => {
         const deal: SubmissionInputs = {
+          ...VALID_SUBMISSION_FIELDS,
           ace_involvement_type: field.ace_involvement_type,
           ace_visibility: field.ace_visibility,
         };
@@ -140,10 +156,14 @@ describe("submission-mode classifier", () => {
     test("undefined property values are treated as missing", () => {
       // R1.2 / R3.5: HubSpot may return `undefined` for unset properties; the
       // classifier must not blow up and must report them as missing in
-      // declaration order.
+      // declaration order — all five Submission_Required_Fields.
       expect(missingSubmissionFields({})).toEqual([
         "ace_involvement_type",
         "ace_visibility",
+        "ace_delivery_model",
+        "ace_primary_need_from_aws",
+        "ace_customer_use_case",
+        "ace_sales_activities",
       ]);
     });
   });
@@ -199,10 +219,12 @@ describe("submission-mode classifier", () => {
 
     test("missingSubmissionFields treats whitespace-only as missing", () => {
       const dealEmpty: SubmissionInputs = {
+        ...VALID_SUBMISSION_FIELDS,
         ace_involvement_type: "",
         ace_visibility: "",
       };
       const dealWhitespace: SubmissionInputs = {
+        ...VALID_SUBMISSION_FIELDS,
         ace_involvement_type: "   ",
         ace_visibility: "\t \n",
       };
@@ -217,6 +239,7 @@ describe("submission-mode classifier", () => {
 
     test("classifySubmissionMode: whitespace-only required fields downgrade to Create_Only", () => {
       const deal: SubmissionInputs = {
+        ...VALID_SUBMISSION_FIELDS,
         ace_involvement_type: "   ",
         ace_visibility: "Full",
         aws_review_status: "",
@@ -226,13 +249,11 @@ describe("submission-mode classifier", () => {
 
     test("classifySubmissionMode: whitespace-only aws_review_status equates to empty (Create_And_Submit when fields populated)", () => {
       const dealEmpty: SubmissionInputs = {
-        ace_involvement_type: "Co-Sell",
-        ace_visibility: "Full",
+        ...VALID_SUBMISSION_FIELDS,
         aws_review_status: "",
       };
       const dealWhitespace: SubmissionInputs = {
-        ace_involvement_type: "Co-Sell",
-        ace_visibility: "Full",
+        ...VALID_SUBMISSION_FIELDS,
         aws_review_status: "   ",
       };
       expect(classifySubmissionMode(dealWhitespace)).toBe(

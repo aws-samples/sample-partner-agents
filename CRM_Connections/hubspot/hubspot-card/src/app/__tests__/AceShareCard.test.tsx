@@ -177,6 +177,44 @@ type FetchFn = Props["fetchFn"];
 const API = "https://apigw.example.com";
 
 /**
+ * A close date safely in the future relative to the test run. The card's
+ * readiness checklist now flags past/today close dates (mirroring the
+ * backend `closeDateFuture` precondition), so fixtures that need to be
+ * "ready to share" must use a future date. Computed dynamically so the
+ * suite never goes stale.
+ */
+function futureDate(): string {
+  return new Date(Date.now() + 120 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Field set that satisfies every CREATE precondition (so the readiness
+ * gate passes and the Share button shows its submission-mode label rather
+ * than the "complete required fields" gate label). Submission-only fields
+ * (ace_involvement_type / ace_visibility) are intentionally left to the
+ * caller so tests can flip the Create_And_Submit ⇄ Create_Only classifier.
+ */
+function createReadyFields(): Record<string, string> {
+  return {
+    description: "Customer needs to migrate ten workloads to AWS by Q3.",
+    dealname: "Acme Migration",
+    dealstage: "qualifiedtobuy",
+    amount: "12000",
+    closedate: futureDate(),
+    ace_country_code: "US",
+    ace_state_or_region: "WA",
+    ace_postal_code: "98101",
+    ace_industry: "Software and Internet",
+    ace_website_url: "https://acme.com",
+    ace_currency_code: "USD",
+    ace_solutions: "S-0000001",
+    ace_marketing_source: "No",
+  };
+}
+
+/**
  * Build a minimal `actions` object for a given deal snapshot. The
  * `fetchCrmObjectProperties` mock returns the provided snapshot on every
  * call — tests that need to observe the re-read on settle do so by
@@ -820,10 +858,16 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
   test("Create_And_Submit: Share label is 'Share to AWS (creates and submits)' and helper line announces submit-for-review (R1.4, R1.6)", async () => {
     // All Submission_Required_Fields populated, no `aws_review_status`,
     // no `ace_opportunity_id` — classifier returns Create_And_Submit.
+    // The deal is also create-ready so the readiness gate passes and the
+    // submission-mode label (not the "complete required fields" gate) shows.
     const actions = makeActions({
-      description: "desc",
+      ...createReadyFields(),
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -851,9 +895,11 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
   test("Create_Only because of missing ace_visibility: Share label is 'Share to AWS (save as draft)' and helper line lists the missing field (R1.5, R1.7)", async () => {
     // `ace_involvement_type` is set, `ace_visibility` is empty —
     // classifier returns Create_Only and missingSubmissionFields
-    // returns ["ace_visibility"].
+    // returns ["ace_visibility"]. The deal is create-ready (visibility
+    // is a submission-only field, not a create precondition) so the
+    // submission-mode label shows rather than the readiness gate label.
     const actions = makeActions({
-      description: "desc",
+      ...createReadyFields(),
       ace_involvement_type: "Co-Sell",
       ace_visibility: "",
     });
@@ -878,6 +924,49 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("Not-fully-ready new deal: Share label is 'save as draft' (never 'creates and submits'), button stays enabled", async () => {
+    // Submission fields are populated (would classify Create_And_Submit),
+    // but required CREATE fields (amount, close date, country, solutions…)
+    // are missing. Because the deal isn't fully ready, the button must NOT
+    // promise "creates and submits" — it offers a draft, and the readiness
+    // checklist lists what's missing. The button stays clickable so the
+    // backend returns (and now logs) the canonical precondition error.
+    const actions = makeActions({
+      description: "desc",
+      ace_involvement_type: "Co-Sell",
+      ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
+    });
+    const fetchFn = makeFetchFn({ ok: true, message: "" });
+    render(
+      <AceShareCard
+        dealId={42}
+        apiBaseUrl={API}
+        actions={actions}
+        fetchFn={fetchFn}
+      />
+    );
+    const draftBtn = await screen.findByText("Share to AWS (save as draft)");
+    expect(draftBtn).toBeInTheDocument();
+    expect(draftBtn.closest("button")).not.toBeDisabled();
+    // The misleading submit promise MUST NOT show while fields are missing.
+    expect(
+      screen.queryByText("Share to AWS (creates and submits)")
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "This click will submit the opportunity to AWS for review."
+      )
+    ).not.toBeInTheDocument();
+    // Helper reflects the draft framing.
+    expect(
+      screen.getByText(/save the opportunity to AWS as a draft/i)
+    ).toBeInTheDocument();
+  });
+
   test("Submit button visible and enabled with label 'Submit for AWS Review' when ace_opportunity_id set + aws_review_status='Pending Submission' (R5.1, R5.2, R5.3, R5.6)", async () => {
     const actions = makeActions({
       description: "desc",
@@ -885,6 +974,10 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
       aws_review_status: "Pending Submission",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -907,6 +1000,10 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
       aws_review_status: "Submitted",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -924,22 +1021,19 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
     ).not.toBeInTheDocument();
   });
 
-  // PREVENT-NULL-REVIEW-STATUS: when the opp is already saved on AWS
-  // as a draft (oppId set + aws_review_status ∈ {"Pending Submission", ""}),
-  // the Share button is hidden entirely. The "editable pass-through"
-  // Share path used to silently strip ReviewStatus to null on the
-  // Sandbox catalog and orphan the opp; we now both (a) preserve
-  // ReviewStatus on the backend update payload, and (b) hide the
-  // Share button in this state so the rep simply cannot trigger the
-  // path. Submit becomes the only action available from a saved draft.
+  // Saved-but-unsubmitted drafts (oppId set + aws_review_status ∈
+  // {"Pending Submission", ""}) keep an editable Share button
+  // ("Push updates to AWS") alongside Submit. The backend preserves
+  // ReviewStatus on update (R-PREVENT-NULL-REVIEW-STATUS passthrough in
+  // payload.ts), so pushing updates to a draft is safe — reps update the
+  // draft and submit when ready.
 
-  test("Draft already saved (Pending Submission) + missing fields: Share button is HIDDEN; helper line is also hidden; missing-fields hint sits next to Submit; Submit is disabled", async () => {
+  test("Draft already saved (Pending Submission) + missing submission fields: Share shows 'Push updates to AWS'; missing-fields hint sits next to Submit; Submit is disabled", async () => {
     const actions = makeActions({
       description: "desc",
       ace_opportunity_id: "O-PENDING",
       aws_review_status: "Pending Submission",
-      // Missing ace_involvement_type and ace_visibility — the deal
-      // shape that triggered the user-reported confusion.
+      // Missing ace_involvement_type and ace_visibility.
       ace_involvement_type: "",
       ace_visibility: "",
     });
@@ -952,20 +1046,17 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
         fetchFn={fetchFn}
       />
     );
-    // Wait for card to render (Refresh appears).
     await screen.findByText(/Refresh from AWS Partner Central/i);
-    // Share button MUST NOT render in any of its labels.
+    // Share is available as an update action for the saved draft.
+    expect(screen.getByText("Push updates to AWS")).toBeInTheDocument();
+    // The create-mode labels never apply once an opp exists.
     expect(
       screen.queryByText("Share to AWS (creates and submits)")
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText("Share to AWS (save as draft)")
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Update draft on AWS")
-    ).not.toBeInTheDocument();
-    // Helper line under Share is also hidden — there's no Share
-    // button to sit under.
+    // The create-mode helper line is suppressed when an opp exists.
     expect(
       screen.queryByText(/save the opportunity to AWS as a draft/i)
     ).not.toBeInTheDocument();
@@ -976,20 +1067,22 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
     expect(missing).toHaveTextContent(
       /Populate these fields on the deal, then click Submit/,
     );
-    // Submit is rendered but disabled because the missing fields
-    // gate it. The Submit lambda would also reject the request, so
-    // disabling client-side is just early UX.
+    // Submit is rendered but disabled because the missing fields gate it.
     const submitBtn = screen.getByText("Submit for AWS Review");
     expect(submitBtn.closest("button")).toBeDisabled();
   });
 
-  test("Draft already saved (Pending Submission) + all fields populated: Share button is HIDDEN, Submit is enabled primary", async () => {
+  test("Draft already saved (Pending Submission) + all fields populated: Share shows 'Push updates to AWS', Submit is enabled primary", async () => {
     const actions = makeActions({
       description: "desc",
       ace_opportunity_id: "O-PENDING",
       aws_review_status: "Pending Submission",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -1001,14 +1094,14 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
       />
     );
     await screen.findByText(/Refresh from AWS Partner Central/i);
+    // Share is available as an update action.
+    expect(screen.getByText("Push updates to AWS")).toBeInTheDocument();
+    // Create-mode labels don't apply once an opp exists.
     expect(
       screen.queryByText("Share to AWS (creates and submits)")
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText("Share to AWS (save as draft)")
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Update draft on AWS")
     ).not.toBeInTheDocument();
     const submitBtn = screen.getByText("Submit for AWS Review").closest(
       "button",
@@ -1019,15 +1112,34 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
     expect(
       screen.queryByText(/Missing for submission:/),
     ).not.toBeInTheDocument();
+    // This fixture carries no ace_last_sync / hs_lastmodifieddate, so it
+    // is NOT in the "Pending Sync" state — Submit stays enabled and the
+    // push-first lock message is absent.
+    expect(
+      screen.queryByText(/edits that aren.t on AWS yet/i),
+    ).not.toBeInTheDocument();
   });
 
-  test("Draft already saved (legacy empty aws_review_status, R11.2): same Share-hidden treatment applies", async () => {
+  test("Pending Sync (edited after last sync): Submit is LOCKED until the rep pushes, with a clear reason", async () => {
+    // Repro of the reported bug: a draft was shared with fields missing,
+    // the rep then filled them in. All submission fields are now present
+    // (missingFields empty), but the edits haven't been pushed to AWS —
+    // the opp is stale. Submit must be disabled and explain why.
+    const lastSync = String(Date.parse("2026-06-26T10:00:00.000Z")); // epoch ms
+    const editedLater = String(Date.parse("2026-06-26T10:30:00.000Z")); // epoch ms
     const actions = makeActions({
       description: "desc",
-      ace_opportunity_id: "O-LEGACY",
-      // aws_review_status absent — the legacy "orphan opp" recovery state.
+      ace_opportunity_id: "O-PENDING-SYNC",
+      aws_review_status: "Pending Submission",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
+      ace_sync_status: "Synced",
+      ace_last_sync: lastSync,
+      hs_lastmodifieddate: editedLater,
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -1039,9 +1151,42 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
       />
     );
     await screen.findByText(/Refresh from AWS Partner Central/i);
+    // Push is still available.
+    expect(screen.getByText("Push updates to AWS")).toBeInTheDocument();
+    // Submit is present but DISABLED because of unpushed edits.
+    const submitBtn = screen.getByText("Submit for AWS Review").closest(
+      "button",
+    );
+    expect(submitBtn).toBeDisabled();
+    // And the reason is shown.
     expect(
-      screen.queryByText("Update draft on AWS"),
-    ).not.toBeInTheDocument();
+      screen.getByText(/edits that aren.t on AWS yet/i),
+    ).toBeInTheDocument();
+  });
+
+  test("Draft already saved (legacy empty aws_review_status, R11.2): Share shows 'Push updates to AWS' alongside Submit", async () => {
+    const actions = makeActions({
+      description: "desc",
+      ace_opportunity_id: "O-LEGACY",
+      // aws_review_status absent — the legacy "orphan opp" recovery state.
+      ace_involvement_type: "Co-Sell",
+      ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
+    });
+    const fetchFn = makeFetchFn({ ok: true, message: "" });
+    render(
+      <AceShareCard
+        dealId={42}
+        apiBaseUrl={API}
+        actions={actions}
+        fetchFn={fetchFn}
+      />
+    );
+    await screen.findByText(/Refresh from AWS Partner Central/i);
+    expect(screen.getByText("Push updates to AWS")).toBeInTheDocument();
     expect(
       screen.queryByText("Share to AWS (creates and submits)"),
     ).not.toBeInTheDocument();
@@ -1060,6 +1205,10 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
       aws_review_status: "Pending Submission",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     // The fetch never resolves while we observe the in-flight UI.
     let resolveFetch: (value: {
@@ -1094,12 +1243,11 @@ describe("AceShareCard — Submission_Mode + Submit_Action", () => {
     const busySubmitBtn = screen.getByText(/Submitting/i).closest("button");
     expect(busySubmitBtn).not.toBeNull();
     expect(busySubmitBtn).toBeDisabled();
-    // Share button is HIDDEN in this state (PREVENT-NULL-REVIEW-STATUS),
-    // not just disabled. Verify it's not in the document at all under
-    // any of its label variants.
-    expect(
-      screen.queryByText("Update draft on AWS"),
-    ).not.toBeInTheDocument();
+    // Share ("Push updates to AWS") is still rendered for the saved
+    // draft, but disabled while the Submit is in flight.
+    const pushBtn = screen.getByText("Push updates to AWS").closest("button");
+    expect(pushBtn).toBeDisabled();
+    // Create-mode labels never apply once an opp exists.
     expect(
       screen.queryByText("Share to AWS (creates and submits)"),
     ).not.toBeInTheDocument();
@@ -1136,10 +1284,13 @@ describe("AceShareCard — share-readiness checklist", () => {
       dealname: "Acme Migration",
       dealstage: "qualifiedtobuy",
       amount: "12000",
-      closedate: "2026-09-30",
+      closedate: futureDate(),
       ace_country_code: "US",
       ace_state_or_region: "WA",
       ace_postal_code: "98101",
+      ace_industry: "Software and Internet",
+      ace_website_url: "https://acme.com",
+      ace_currency_code: "USD",
       ace_solutions: "S-0000001",
       ace_marketing_source: "No",
     };
@@ -1394,11 +1545,17 @@ describe("AceShareCard — checklist deal→company fallback", () => {
       dealname: "Acme Migration",
       dealstage: "qualifiedtobuy",
       amount: "12000",
-      closedate: "2026-09-30",
+      closedate: futureDate(),
       // Deliberately blank — the values live on the company.
       ace_country_code: "",
       ace_state_or_region: "",
       ace_postal_code: "",
+      // Industry / currency have no company fallback, and website is set
+      // on the deal so these fallback tests stay focused on country/state/
+      // postal.
+      ace_industry: "Software and Internet",
+      ace_currency_code: "USD",
+      ace_website_url: "https://acme.com",
       ace_solutions: "S-0000001",
       ace_marketing_source: "No",
     };
@@ -1672,7 +1829,7 @@ describe("AceShareCard — AWS incompatibility detection", () => {
       dealname: "Acme Migration",
       dealstage: "qualifiedtobuy",
       amount: "12000",
-      closedate: "2026-09-30",
+      closedate: futureDate(),
       ace_country_code: "US",
       ace_state_or_region: "WA",
       ace_postal_code: "98101",
@@ -1747,6 +1904,10 @@ describe("AceShareCard — AWS incompatibility detection", () => {
       aws_review_status: "Pending Submission",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -1773,6 +1934,10 @@ describe("AceShareCard — AWS incompatibility detection", () => {
       aws_review_status: "Pending Submission",
       ace_involvement_type: "For Visibility Only",
       ace_visibility: "Limited",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "For Visibility Only",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -1803,6 +1968,10 @@ describe("AceShareCard — humanized submission failure", () => {
       aws_review_status: "Pending Submission",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
       ace_sync_error:
         "StartEngagement: BUSINESS_VALIDATION_EXCEPTION primaryNeedsFromAws:Cannot set visibility to limited on a Co-Sell opportunity;ACTION_NOT_PERMITTED:You cannot perform Submit action. Opportunity cannot be submitted or updated to Limited Visibility",
     });
@@ -1892,10 +2061,13 @@ describe("AceShareCard — live property updates", () => {
         dealname: "Acme Migration",
         dealstage: "qualifiedtobuy",
         amount: "12000",
-        closedate: "2026-09-30",
+        closedate: futureDate(),
         ace_country_code: "",
         ace_state_or_region: "",
         ace_postal_code: "",
+        ace_industry: "Software and Internet",
+        ace_currency_code: "USD",
+        ace_website_url: "https://acme.com",
         ace_solutions: "S-0000001",
         ace_marketing_source: "No",
       },
@@ -2020,6 +2192,10 @@ describe("AceShareCard — AWS Products", () => {
       ace_aws_products: "AmazonEC2P5;S3IntelligentTiering",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(
@@ -2043,7 +2219,7 @@ describe("AceShareCard — AWS Products", () => {
       dealname: "Acme",
       dealstage: "qualifiedtobuy",
       amount: "12000",
-      closedate: "2026-09-30",
+      closedate: futureDate(),
       ace_country_code: "US",
       ace_state_or_region: "WA",
       ace_postal_code: "98101",
@@ -2074,7 +2250,7 @@ describe("AceShareCard — AWS Products", () => {
       dealname: "Acme",
       dealstage: "qualifiedtobuy",
       amount: "12000",
-      closedate: "2026-09-30",
+      closedate: futureDate(),
       ace_country_code: "US",
       ace_state_or_region: "WA",
       ace_postal_code: "98101",
@@ -2105,6 +2281,10 @@ describe("AceShareCard — AWS Products", () => {
       ace_aws_products: "CODE.AWS;Amazon GameCast",
       ace_involvement_type: "Co-Sell",
       ace_visibility: "Full",
+      ace_delivery_model: "SaaS or PaaS",
+      ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+      ace_customer_use_case: "Business Applications & Contact Center",
+      ace_sales_activities: "Initialized discussions with customer",
     });
     const fetchFn = makeFetchFn({ ok: true, message: "" });
     render(

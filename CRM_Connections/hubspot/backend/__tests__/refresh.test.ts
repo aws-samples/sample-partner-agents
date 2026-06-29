@@ -318,11 +318,45 @@ describe("runRefresh — error paths", () => {
     expect(resp.ok).toBe(true);
     if (resp.ok) {
       expect(resp.properties.ace_sync_status).toBe("Synced");
-      // Summary-only fields come back empty when the read failed.
-      expect(resp.properties.ace_involvement_type).toBe("");
-      expect(resp.properties.ace_visibility).toBe("");
-      expect(resp.properties.ace_solutions).toBe("");
+      // Non-destructive reverse-sync: summary-only fields (InvolvementType
+      // / Visibility) and any other partner-editable input AWS returns
+      // blank are OMITTED from the write, not set to "" — so a locally-set
+      // value survives. They must be absent from the response props.
+      expect(resp.properties.ace_involvement_type).toBeUndefined();
+      expect(resp.properties.ace_visibility).toBeUndefined();
+      expect(resp.properties.ace_solutions).toBeUndefined();
     }
+  });
+
+  test("Refresh does NOT clobber locally-set involvement/visibility when AWS summary is blank (regression)", async () => {
+    // The deal carries the partner's freshly-entered submission fields.
+    // AWS has no summary yet (pre-submission), so the snapshot's
+    // involvement/visibility are blank. The write-back must OMIT those
+    // keys so HubSpot keeps the partner's values — otherwise Submit can
+    // never see them (they'd be wiped on every Refresh).
+    const ace = buildAce({
+      getOpportunity: vi
+        .fn()
+        .mockResolvedValue({ LifeCycle: { Stage: "Qualified", ReviewStatus: "Pending Submission" } }),
+      getAwsOpportunitySummary: vi.fn().mockResolvedValue({}),
+    });
+    const hs = buildHs(
+      baseDeal({
+        ace_involvement_type: "Co-Sell",
+        ace_visibility: "Full",
+      })
+    );
+
+    const resp = await runRefresh(42, {
+      config: BASE_CONFIG,
+      ace: ace.client,
+      hs: hs.client,
+    });
+
+    expect(resp.ok).toBe(true);
+    const written = hs.mocks.writeDealProperties.mock.calls[0][1];
+    expect("ace_involvement_type" in written).toBe(false);
+    expect("ace_visibility" in written).toBe(false);
   });
 });
 
