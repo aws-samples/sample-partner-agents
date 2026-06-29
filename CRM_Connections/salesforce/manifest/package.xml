@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+
+    <!-- Custom Objects (including Platform Event `__e` and Custom Metadata Type `__mdt`) -->
+    <types>
+        <members>Audit_Log__c</members>
+        <members>Chat_Agent_Config__mdt</members>
+        <members>Chat_Session__c</members>
+        <members>Chat_Stream_Event__e</members>
+        <members>Pending_Write_Operation__c</members>
+        <name>CustomObject</name>
+    </types>
+
+    <!-- Custom Fields -->
+    <types>
+        <!-- Audit_Log__c -->
+        <members>Audit_Log__c.Approval_Decision__c</members>
+        <members>Audit_Log__c.Approval_Timestamp__c</members>
+        <members>Audit_Log__c.Approval_User__c</members>
+        <members>Audit_Log__c.Endpoint_Mode__c</members>
+        <members>Audit_Log__c.Http_Status__c</members>
+        <members>Audit_Log__c.Json_Rpc_Request_Id__c</members>
+        <members>Audit_Log__c.Mcp_Method__c</members>
+        <members>Audit_Log__c.Object_Api_Name__c</members>
+        <members>Audit_Log__c.Operation_Id__c</members>
+        <members>Audit_Log__c.Record_Id__c</members>
+        <members>Audit_Log__c.Request_Params_Redacted__c</members>
+        <members>Audit_Log__c.Request_Timestamp__c</members>
+        <members>Audit_Log__c.Response_Body_Redacted__c</members>
+        <members>Audit_Log__c.Response_Timestamp__c</members>
+        <members>Audit_Log__c.Session_Id__c</members>
+        <members>Audit_Log__c.User__c</members>
+        <!-- Chat_Agent_Config__mdt -->
+        <members>Chat_Agent_Config__mdt.Allowed_Mime_Types__c</members>
+        <members>Chat_Agent_Config__mdt.Aws_Account_Id__c</members>
+        <members>Chat_Agent_Config__mdt.Is_Sandbox__c</members>
+        <members>Chat_Agent_Config__mdt.Max_Attachment_Size_Bytes__c</members>
+        <members>Chat_Agent_Config__mdt.Named_Credential_Name__c</members>
+        <members>Chat_Agent_Config__mdt.Request_Timeout_Seconds__c</members>
+        <members>Chat_Agent_Config__mdt.S3_Bucket_Name__c</members>
+        <members>Chat_Agent_Config__mdt.S3_Named_Credential_Name__c</members>
+        <members>Chat_Agent_Config__mdt.Sandbox_Named_Credential_Name__c</members>
+        <members>Chat_Agent_Config__mdt.Session_Retention_Minutes__c</members>
+        <members>Chat_Agent_Config__mdt.Sse_Enabled__c</members>
+        <!-- Chat_Session__c -->
+        <members>Chat_Session__c.Endpoint_Mode__c</members>
+        <members>Chat_Session__c.Is_Active__c</members>
+        <members>Chat_Session__c.Last_Activity__c</members>
+        <members>Chat_Session__c.Record_Id__c</members>
+        <members>Chat_Session__c.Session_Id__c</members>
+        <members>Chat_Session__c.Transcript_Json__c</members>
+        <members>Chat_Session__c.User__c</members>
+        <!-- Chat_Stream_Event__e -->
+        <members>Chat_Stream_Event__e.Data__c</members>
+        <members>Chat_Stream_Event__e.Event_Type__c</members>
+        <members>Chat_Stream_Event__e.Is_Terminal__c</members>
+        <members>Chat_Stream_Event__e.Sequence__c</members>
+        <members>Chat_Stream_Event__e.Transcript_Entry_Id__c</members>
+        <members>Chat_Stream_Event__e.User__c</members>
+        <!-- Pending_Write_Operation__c -->
+        <members>Pending_Write_Operation__c.Created_Timestamp__c</members>
+        <members>Pending_Write_Operation__c.Decision__c</members>
+        <members>Pending_Write_Operation__c.Decision_Timestamp__c</members>
+        <members>Pending_Write_Operation__c.Field_Diff__c</members>
+        <members>Pending_Write_Operation__c.Json_Rpc_Request_Id__c</members>
+        <members>Pending_Write_Operation__c.Operation_Id__c</members>
+        <members>Pending_Write_Operation__c.Operation_Name__c</members>
+        <members>Pending_Write_Operation__c.Params_Payload__c</members>
+        <members>Pending_Write_Operation__c.Record_Id__c</members>
+        <members>Pending_Write_Operation__c.Session_Id__c</members>
+        <members>Pending_Write_Operation__c.Status__c</members>
+        <members>Pending_Write_Operation__c.Summary__c</members>
+        <members>Pending_Write_Operation__c.Target_Resource_Id__c</members>
+        <members>Pending_Write_Operation__c.User__c</members>
+        <name>CustomField</name>
+    </types>
+
+    <!-- Custom Metadata default record -->
+    <types>
+        <members>Chat_Agent_Config.Default</members>
+        <name>CustomMetadata</name>
+    </types>
+
+    <!-- Apex Classes -->
+    <types>
+        <members>AccessDeniedException</members>
+        <members>ApprovalPromptDto</members>
+        <members>AttachmentDto</members>
+        <members>AttachmentRefDto</members>
+        <members>AttachmentValidator</members>
+        <members>AuditLogger</members>
+        <members>AuditRedactor</members>
+        <members>AuthenticationException</members>
+        <members>ChatAgentConfigException</members>
+        <members>ChatAgentController</members>
+        <members>ChatAgentControllerTest</members>
+        <members>ChatAgentCoverageTests</members>
+        <members>ChatAgentIntegrationTestMocks</members>
+        <members>ChatAgentResult</members>
+        <members>ClientException</members>
+        <members>ConfigDto</members>
+        <members>ConfigProvider</members>
+        <members>JsonRpcError</members>
+        <members>JsonRpcParseException</members>
+        <members>JsonRpcParser</members>
+        <members>JsonRpcRequest</members>
+        <members>JsonRpcResponse</members>
+        <members>JsonRpcSerializationException</members>
+        <members>JsonRpcSerializer</members>
+        <members>McpClient</members>
+        <members>OperationClassifier</members>
+        <members>OperationNotFoundException</members>
+        <members>PendingWriteOperationStore</members>
+        <members>PermissionGate</members>
+        <members>RetryableException</members>
+        <members>SessionExpirySweeper</members>
+        <members>SessionManager</members>
+        <members>SseFrame</members>
+        <members>SseFrameParser</members>
+        <members>TimeoutException</members>
+        <members>TranscriptDto</members>
+        <members>TranscriptEntryDto</members>
+        <members>ValidationResult</members>
+        <name>ApexClass</name>
+    </types>
+
+    <!-- Lightning Web Components -->
+    <types>
+        <members>chatAgent</members>
+        <name>LightningComponentBundle</name>
+    </types>
+
+    <!-- Permission Sets -->
+    <types>
+        <members>Partner_Central_Chat_Agent_User</members>
+        <name>PermissionSet</name>
+    </types>
+
+    <version>62.0</version>
+</Package>

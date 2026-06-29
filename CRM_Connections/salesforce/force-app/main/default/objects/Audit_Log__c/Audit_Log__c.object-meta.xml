@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Audit Log</label>
+    <pluralLabel>Audit Logs</pluralLabel>
+    <nameField>
+        <label>Audit Log Number</label>
+        <type>AutoNumber</type>
+        <displayFormat>AL-{00000000}</displayFormat>
+        <startingNumber>1</startingNumber>
+    </nameField>
+    <deploymentStatus>Deployed</deploymentStatus>
+    <sharingModel>Private</sharingModel>
+    <enableActivities>false</enableActivities>
+    <enableReports>true</enableReports>
+    <enableHistory>false</enableHistory>
+    <enableSearch>true</enableSearch>
+    <enableFeeds>false</enableFeeds>
+    <visibility>Public</visibility>
+</CustomObject>
