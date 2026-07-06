@@ -36,14 +36,27 @@ class HubSpotClient:
                 response = requests.get(url, headers=headers, params=params, timeout=30)
             elif method == "POST":
                 response = requests.post(url, headers=headers, json=data, timeout=30)
+            elif method == "PUT":
+                response = requests.put(url, headers=headers, json=data, timeout=30)
+            elif method == "PATCH":
+                response = requests.patch(url, headers=headers, json=data, timeout=30)
             else:
                 return {"error": f"Unsupported method: {method}"}
             
             response.raise_for_status()
+            # Some endpoints (associations) return 204 No Content.
+            if response.status_code == 204 or not response.content:
+                return {"success": True}
             return response.json()
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HubSpot API error: {e}")
-            return {"error": str(e), "status_code": e.response.status_code if e.response else None}
+            body = ""
+            try:
+                body = e.response.text[:300] if e.response is not None else ""
+            except Exception:
+                pass
+            logger.error(f"HubSpot API error: {e} {body}")
+            return {"error": str(e), "details": body,
+                    "status_code": e.response.status_code if e.response is not None else None}
         except Exception as e:
             logger.error(f"HubSpot request error: {e}")
             return {"error": str(e)}
@@ -146,15 +159,38 @@ class HubSpotClient:
             }
         )
     
+    def validate_token(self) -> Dict:
+        """Cheap check that the token is valid and has deal read access.
+        Returns {"valid": bool, "status_code": int|None, "error": str|None}."""
+        resp = self._make_request("GET", "/crm/v3/objects/deals?limit=1")
+        if "error" not in resp:
+            return {"valid": True, "status_code": 200, "error": None}
+        return {"valid": False, "status_code": resp.get("status_code"),
+                "error": resp.get("error")}
+
     def list_deals(self, limit: int = 10) -> List[HubSpotDeal]:
-        """List recent deals"""
-        endpoint = f"/crm/v3/objects/deals?limit={limit}&properties=dealname,amount,dealstage,closedate,hs_next_step,partner_central_opportunity_id,partner_central_sync_status,ace_stage,ace_validation_status"
-        result = self._make_request("GET", endpoint)
-        
+        """List recent deals, newest first (sorted by createdate DESC).
+
+        Uses the Search API so the most recently created deals appear at the
+        top — important for the demo, where the user creates a deal and wants
+        to immediately see it in the list.
+        """
+        properties = [
+            "dealname", "amount", "dealstage", "closedate", "createdate",
+            "hs_next_step", "partner_central_opportunity_id",
+            "partner_central_sync_status", "ace_stage", "ace_validation_status",
+        ]
+        body = {
+            "limit": min(limit, 100),
+            "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}],
+            "properties": properties,
+        }
+        result = self._make_request("POST", "/crm/v3/objects/deals/search", body)
+
         if "error" in result:
             logger.error(f"Failed to list deals: {result['error']}")
             return []
-        
+
         deals = []
         for deal_data in result.get("results", []):
             props = deal_data.get("properties", {})
@@ -170,5 +206,116 @@ class HubSpotClient:
                 description="",
                 properties=props
             ))
-        
+
         return deals
+
+    # ------------------------------------------------------------------
+    # Write operations (used by the "Process Call" demo flow).
+    # Require a token with crm.objects.deals.write + crm.objects.contacts.write.
+    # ------------------------------------------------------------------
+    def _default_pipeline_stage(self):
+        """Return (pipeline_id, stage_id) for the first deal pipeline/stage.
+
+        HubSpot can auto-assign these, but some portals reject a deal that
+        omits them. Returning explicit defaults keeps deal creation portable
+        across portals. Returns (None, None) if pipelines can't be fetched.
+        """
+        try:
+            result = self._make_request("GET", "/crm/v3/pipelines/deals")
+            pipelines = result.get("results", []) if "error" not in result else []
+            if pipelines:
+                pipeline = pipelines[0]
+                stages = pipeline.get("stages", [])
+                # Sort by displayOrder so we pick the earliest stage.
+                stages = sorted(stages, key=lambda s: s.get("displayOrder", 0))
+                stage_id = stages[0].get("id") if stages else None
+                return pipeline.get("id"), stage_id
+        except Exception as e:
+            logger.warning(f"Could not resolve default pipeline/stage: {e}")
+        return None, None
+
+    def create_contact(self, properties: Dict) -> Dict:
+        """Create a contact. `properties` uses HubSpot contact keys
+        (firstname, lastname, email, phone, jobtitle). Returns the API response
+        (contains 'id' on success, or 'error'). If the contact already exists
+        (409), the existing contact ID is parsed and returned so the caller can
+        still associate it to the deal."""
+        import re
+        clean = {k: v for k, v in (properties or {}).items() if v not in (None, "")}
+        resp = self._make_request("POST", "/crm/v3/objects/contacts", {"properties": clean})
+        if resp.get("status_code") == 409:
+            match = re.search(r"Existing ID:\s*(\d+)", resp.get("details", "") or "")
+            if match:
+                logger.info(f"Contact already exists; reusing ID {match.group(1)}")
+                return {"id": match.group(1), "reused": True}
+        return resp
+
+    def associate_contact_to_deal(self, deal_id: str, contact_id: str) -> Dict:
+        """Associate a contact to a deal using the default association type."""
+        endpoint = f"/crm/v4/objects/deals/{deal_id}/associations/default/contacts/{contact_id}"
+        return self._make_request("PUT", endpoint)
+
+    def create_deal(self, properties: Dict) -> Dict:
+        """Create a deal. `properties` uses HubSpot deal keys
+        (dealname, amount, closedate, description, ...). Pipeline/stage are
+        filled with portal defaults if not provided. Returns the API response
+        (contains 'id' on success, or 'error')."""
+        props = {k: v for k, v in (properties or {}).items() if v not in (None, "")}
+        if "pipeline" not in props or "dealstage" not in props:
+            pipeline_id, stage_id = self._default_pipeline_stage()
+            if pipeline_id and "pipeline" not in props:
+                props["pipeline"] = pipeline_id
+            if stage_id and "dealstage" not in props:
+                props["dealstage"] = stage_id
+        return self._make_request("POST", "/crm/v3/objects/deals", {"properties": props})
+
+    def _account_info(self) -> Dict:
+        """Fetch and cache HubSpot account details (portalId, uiDomain) used to
+        build correct, region-aware record URLs."""
+        if not hasattr(self, "_acct_cache"):
+            info = self._make_request("GET", "/account-info/v3/details")
+            self._acct_cache = info if isinstance(info, dict) and "error" not in info else {}
+        return self._acct_cache
+
+    def deal_url(self, deal_id: str) -> str:
+        """Build a clickable HubSpot deal record URL for the connected portal.
+
+        Correct format: https://{uiDomain}/contacts/{portalId}/record/0-3/{dealId}/
+        (0-3 is HubSpot's object-type id for deals). Falls back to a generic URL
+        if account info can't be fetched."""
+        info = self._account_info()
+        ui_domain = info.get("uiDomain")
+        portal_id = info.get("portalId")
+        if ui_domain and portal_id:
+            return f"https://{ui_domain}/contacts/{portal_id}/record/0-3/{deal_id}/"
+        return f"https://app.hubspot.com/contacts/deals/{deal_id}"
+
+    def create_deal_with_contact(self, deal_properties: Dict, contact_properties: Dict = None) -> Dict:
+        """Create a deal and (optionally) a contact, then associate them.
+
+        Returns: {success, deal_id, contact_id, error, deal_url}.
+        """
+        deal_resp = self.create_deal(deal_properties)
+        if "error" in deal_resp or not deal_resp.get("id"):
+            return {"success": False, "deal_id": None, "contact_id": None,
+                    "error": deal_resp.get("error") or deal_resp.get("details") or "Deal creation failed"}
+        deal_id = deal_resp["id"]
+
+        contact_id = None
+        if contact_properties:
+            contact_resp = self.create_contact(contact_properties)
+            if "error" not in contact_resp and contact_resp.get("id"):
+                contact_id = contact_resp["id"]
+                self.associate_contact_to_deal(deal_id, contact_id)
+            else:
+                # Non-fatal: the deal exists; log and continue without a contact.
+                logger.warning(f"Contact creation/association failed: "
+                               f"{contact_resp.get('error') or contact_resp.get('details')}")
+
+        return {
+            "success": True,
+            "deal_id": deal_id,
+            "contact_id": contact_id,
+            "error": None,
+            "deal_url": self.deal_url(deal_id),
+        }

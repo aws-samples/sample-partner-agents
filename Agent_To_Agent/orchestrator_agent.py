@@ -226,7 +226,176 @@ class OrchestratorAgent:
     def list_hubspot_deals(self, limit: int = 10) -> List[HubSpotDeal]:
         """List recent HubSpot deals"""
         return self.hubspot_client.list_deals(limit)
-    
+
+    def process_call_from_notes(self, notes: str, submit_to_aws: bool = False,
+                                project_title: str = None) -> Dict:
+        """End-to-end "Process Call" demo flow — agent-first.
+
+        Showcases the Partner Central Agent: the agent CREATES the opportunity
+        from the call notes and (optionally) SUBMITS it to AWS for co-sell. The
+        only step the agent can't do — creating the CRM deal — is supplemented
+        with the HubSpot API.
+
+        Chain:
+          1. extract fields (Strands/Bedrock)        -> for the CRM deal
+          2. create HubSpot deal + contact           -> HubSpot API (agent gap)
+          3. create the opportunity from the notes    -> Partner Central Agent (MCP)
+          4. (optional) submit to AWS for co-sell     -> Partner Central Agent (MCP)
+          5. confirm review status                    -> Selling API read (verify)
+
+        Returns a dict describing each step so the UI can render progress.
+        """
+        steps = {"extract": None, "hubspot": None, "ace": None, "submit": None}
+        try:
+            # Step 1: extract structured fields (needed to build the CRM deal;
+            # the agent will read the raw notes itself for the ACE side).
+            logger.info("Process-call: extracting fields from notes...")
+            fields = self.next_steps_generator.extract_call_fields(notes)
+            if not fields:
+                return {"success": False, "steps": steps,
+                        "error": "Could not extract opportunity fields from the notes."}
+            steps["extract"] = "ok"
+
+            # Step 2: create the HubSpot deal + contact (API — the agent has no
+            # CRM capability, so this is the supplement).
+            logger.info("Process-call: creating HubSpot deal...")
+            from datetime import datetime
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            base_title = fields.get("project_title") or f"{fields.get('company_name', 'New')} Opportunity"
+            deal_props = {
+                "dealname": f"{base_title} - {stamp}",
+                "amount": str(fields.get("amount") or "").replace(",", "").replace("$", "") or None,
+                "description": self._compose_deal_description(fields),
+            }
+            close_date = (fields.get("close_date") or "").strip()
+            if close_date:
+                deal_props["closedate"] = f"{close_date}T00:00:00.000Z"
+            contact_props = {
+                "firstname": fields.get("contact_first_name"),
+                "lastname": fields.get("contact_last_name"),
+                "email": fields.get("contact_email"),
+                "phone": fields.get("contact_phone"),
+                "jobtitle": fields.get("contact_title"),
+            }
+            hs = self.hubspot_client.create_deal_with_contact(deal_props, contact_props)
+            if not hs.get("success"):
+                steps["hubspot"] = "error"
+                return {"success": False, "steps": steps, "fields": fields,
+                        "error": f"HubSpot deal creation failed: {hs.get('error')}"}
+            steps["hubspot"] = "ok"
+            deal_id = hs["deal_id"]
+
+            # Step 3: let the Partner Central AGENT create the opportunity from
+            # the notes — CREATE ONLY. Splitting create and submit into two
+            # turns (and referencing the exact ID when submitting) prevents the
+            # agent from occasionally firing a second CreateOpportunity.
+            #
+            # AWS rejects submitting a DUPLICATE opportunity for the same
+            # customer. So each demo run gets a unique customer company name
+            # (a short run token) — otherwise re-running with the same notes
+            # creates an opportunity that can't be submitted ("Duplicate Record").
+            logger.info("Process-call: asking the Partner Central Agent to create the opportunity...")
+            company = fields.get("company_name") or "the customer"
+            run_token = datetime.now().strftime("Demo-%m%d-%H%M%S")
+            unique_company = f"{company} ({run_token})"
+            create_instruction = (
+                "Create a new AWS Partner Central opportunity from the meeting notes below. "
+                "Extract the customer account, primary contact, project/business problem, "
+                "use case, expected customer spend, and target close date from the notes. "
+                f"IMPORTANT: set the customer company name to exactly '{unique_company}' "
+                "(this unique demo suffix avoids AWS duplicate-opportunity detection so the "
+                "opportunity can be submitted). "
+                "Create exactly ONE opportunity. Do NOT submit it to AWS — stop as soon as "
+                "the opportunity is created and tell me its opportunity ID."
+                f"\n\n## Meeting Notes:\n{notes}"
+            )
+            create_res = self.mcp_client.run_agent_autopilot(create_instruction)
+            ace_ids = create_res.get("opportunity_ids") or []
+            ace_id = create_res.get("opportunity_id")
+            session_id = create_res.get("session_id")
+            if not ace_id:
+                steps["ace"] = "error"
+                return {"success": False, "steps": steps, "fields": fields,
+                        "deal_id": deal_id, "deal_url": hs.get("deal_url"),
+                        "agent_answer": create_res.get("answer"),
+                        "error": "The Partner Central Agent did not return a created opportunity ID. "
+                                 "It may have asked a clarifying question — see agent_answer."}
+            if len(ace_ids) > 1:
+                logger.warning(f"Agent referenced multiple opportunity IDs {ace_ids}; "
+                               f"using the newest ({ace_id}) as the one it just created.")
+            steps["ace"] = "ok"
+
+            # Step 4 (optional): submit THAT opportunity for co-sell. Reference
+            # the exact ID in the same session so the agent submits the existing
+            # opportunity instead of creating a new one.
+            submitted = False
+            submit_error = None
+            if submit_to_aws:
+                logger.info(f"Process-call: asking the agent to submit {ace_id} for co-sell...")
+                submit_instruction = (
+                    f"Submit opportunity {ace_id} to AWS for review as a co-sell engagement "
+                    f"with full visibility. Do not create a new opportunity — submit the "
+                    f"existing opportunity {ace_id}."
+                )
+                self.mcp_client.run_agent_autopilot(submit_instruction, session_id=session_id)
+                # Verify the real review status (poll briefly — submission is async).
+                submitted = self._poll_review_submitted(ace_id, attempts=4, delay=2)
+                if not submitted:
+                    # Agent submit didn't take — supplement with a direct Selling
+                    # API submit and surface its real task status / error.
+                    logger.info(f"Process-call: agent submit not reflected; supplementing with "
+                                f"Selling API submit for {ace_id}")
+                    api_submit = self.mcp_client.submit_opportunity(ace_id)
+                    if api_submit.get("success"):
+                        submitted = self._poll_review_submitted(ace_id, attempts=4, delay=2)
+                    else:
+                        submit_error = api_submit.get("error")
+                steps["submit"] = "ok" if submitted else "error"
+
+            return {
+                "success": True,
+                "steps": steps,
+                "fields": fields,
+                "deal_id": deal_id,
+                "deal_url": hs.get("deal_url"),
+                "ace_opportunity_id": ace_id,
+                "submitted": submitted,
+                "submit_error": submit_error,
+                "agent_answer": create_res.get("answer"),
+                "error": None,
+            }
+        except Exception as e:
+            logger.error(f"Process-call error: {e}")
+            return {"success": False, "steps": steps, "error": str(e)}
+
+    def _poll_review_submitted(self, opportunity_id: str, attempts: int = 4, delay: int = 2) -> bool:
+        """Poll the opportunity's ReviewStatus; return True once it leaves
+        'Pending Submission' (submission is asynchronous)."""
+        import time
+        for _ in range(attempts):
+            opp = self.mcp_client.get_opportunity(opportunity_id)
+            status = (opp.get("LifeCycle", {}) or {}).get("ReviewStatus", "")
+            if status and status.strip().lower() != "pending submission":
+                return True
+            time.sleep(delay)
+        return False
+
+    @staticmethod
+    def _compose_deal_description(fields: Dict) -> str:
+        """Build a readable HubSpot deal description from extracted fields."""
+        parts = []
+        if fields.get("business_problem"):
+            parts.append(f"Business problem: {fields['business_problem']}")
+        if fields.get("use_case"):
+            parts.append(f"Use case: {fields['use_case']}")
+        if fields.get("solution_description"):
+            parts.append(f"Solution: {fields['solution_description']}")
+        if fields.get("competitor"):
+            parts.append(f"Competitor: {fields['competitor']}")
+        if fields.get("primary_need"):
+            parts.append(f"Primary need from AWS: {fields['primary_need']}")
+        return " | ".join(parts)[:1000] if parts else "Created from call notes."
+
     def create_opportunity_from_salesforce(self, opportunity_id: str, project_title: str = None) -> Dict:
         """
         Create an ACE opportunity from a Salesforce opportunity:

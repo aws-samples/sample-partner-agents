@@ -1,0 +1,69 @@
+# DEMO DATA — All companies, people, addresses, websites, phone numbers,
+# and financial figures in this file are fictional. Domains use RFC 2606
+# reserved test TLDs (.example.com) and cannot be registered as real sites.
+# "MedFirst Health" is a fictional demo customer.
+
+Discovery Call Transcript Summary — MedFirst Health
+Date: June 12, 2026
+Duration: 30 minutes
+Attendees: James Carter (Partner Account Executive),
+           Dana Okafor (VP of Claims Operations, MedFirst Health — executive champion),
+           Raj Patel (Director of Data Engineering, MedFirst Health)
+
+Customer Profile:
+MedFirst Health is a healthcare payer headquartered at 200 Example Street,
+Suite 900, Austin, TX 78701, United States. Website: www.medfirst-health.example.com.
+Industry: Healthcare and Life Sciences. This is a NET-NEW opportunity — MedFirst
+is not yet running this workload on AWS.
+
+Business Problem:
+MedFirst processes roughly 1.2 million insurance claims per month. Today claims
+are triaged manually, averaging 9 days to adjudicate, with a 12% rework rate from
+mis-keyed data. Dana wants to deploy AI-powered claims processing — automated intake,
+document extraction, and adjudication assistance — to cut processing time and reduce
+errors. Compliance requires HIPAA-eligible services, PHI de-identification, and audit
+logging.
+
+Project Scope and Use Case:
+Primary use case: AI Machine Learning and Analytics. Scope: extract structured data
+from claims documents, classify and route claims, and provide an adjudication-assist
+copilot for claims agents, built on Amazon Bedrock foundation models with human review.
+
+BANT Signals (from the call):
+- Budget: $500,000 approved for FY2026 AI initiative. Expected AWS spend ~$42,000/month.
+- Authority: Dana Okafor (VP Claims Operations) is the executive champion and budget owner.
+- Need: Reduce 9-day adjudication cycle and 12% rework rate; top-3 priority for the CIO.
+- Timeline: Q4 2026 go-live. Target close date: 2026-12-15.
+
+Competitive Situation:
+This is a competitive evaluation. MedFirst is also evaluating Microsoft Azure AI
+(Azure OpenAI + Document Intelligence). James positioned AWS Bedrock, but the customer
+explicitly asked for a side-by-side comparison before committing.
+
+AWS Involvement / Primary Need from AWS:
+Customer wants AWS co-sell support. Primary need: Co-Sell - Architectural Validation.
+James wants to activate the co-sell motion and bring in an AWS Healthcare Solutions
+Architect for the competitive technical comparison.
+
+Solution and Delivery Model:
+Delivery model: SaaS or PaaS. Solution: AWS-native claims-processing platform using
+Amazon Bedrock (document extraction + adjudication copilot), Amazon Textract for
+document ingestion, and HIPAA controls (KMS CMKs, VPC endpoints, CloudTrail).
+
+Sales Activity to Date:
+Conducted discovery call. Customer has shown interest in solution. No POC yet.
+
+Target Close Date: 2026-12-15
+Expected Customer Spend: $42,000 USD monthly
+Opportunity Type: Net New Business
+Competitor: Microsoft Azure AI
+
+Primary Contact / Decision Maker:
+Dana Okafor, VP of Claims Operations
+Email: dana.okafor@medfirst-health.example.com
+Phone: +15125550175
+
+Technical Contact:
+Raj Patel, Director of Data Engineering
+Email: raj.patel@medfirst-health.example.com
+Phone: +15125550182

@@ -99,6 +99,31 @@ def requires_auth(f):
     return decorated
 
 
+def _load_config_flag(key, default=False):
+    """Read a boolean flag from config.json, falling back to `default`."""
+    try:
+        config_path = Path(__file__).parent / 'config.json'
+        if config_path.exists():
+            with open(config_path) as f:
+                val = json.load(f).get(key)
+                if val is not None:
+                    return bool(val)
+    except Exception:
+        pass
+    return default
+
+
+# "Process Call" is a high-impact demo flow that creates a REAL deal in the
+# connected CRM. Hidden by default so partners don't accidentally write to
+# their CRM. Enable via config.json ("process_call_enabled": true) or the
+# PROCESS_CALL_ENABLED env var.
+_env_process_call = os.environ.get('PROCESS_CALL_ENABLED')
+if _env_process_call is not None:
+    PROCESS_CALL_ENABLED = _env_process_call.lower() in ('true', '1', 'yes')
+else:
+    PROCESS_CALL_ENABLED = _load_config_flag('process_call_enabled', False)
+
+
 # Store conversation sessions
 conversation_sessions = {}
 
@@ -159,6 +184,7 @@ def index():
         'index.html',
         js_version=_mtime('js/app.js'),
         css_version=_mtime('css/app.css'),
+        process_call_enabled=PROCESS_CALL_ENABLED,
     )
 
 
@@ -1399,6 +1425,95 @@ def auto_approve_tool(mcp_endpoint, config, credentials, service_name, session_i
     except Exception as e:
         logger.error(f"Error in auto-approve: {e}")
         return None
+
+
+@app.route('/api/hubspot/validate-token', methods=['POST'])
+def hubspot_validate_token():
+    """Quick HubSpot token check used by the Process Call tab before it does
+    any writes. Returns {valid: bool, error: str|None}."""
+    data = request.json or {}
+    token = (data.get('token') or '').strip() or os.environ.get('HUBSPOT_BEARER_TOKEN')
+    if not token:
+        return jsonify({"valid": False, "error": "No token provided"}), 200
+    from crm.hubspot_client import HubSpotClient
+    check = HubSpotClient(token).validate_token()
+    if check.get("valid"):
+        return jsonify({"valid": True, "error": None}), 200
+    code = check.get("status_code")
+    if code in (401, 403):
+        msg = "Token is invalid or lacks permissions (need deal + contact read/write)."
+    else:
+        msg = f"Could not reach HubSpot to validate the token: {check.get('error')}"
+    return jsonify({"valid": False, "error": msg}), 200
+
+
+@app.route('/api/process-call', methods=['POST'])
+def process_call():
+    """End-to-end "Process Call" demo: call notes -> HubSpot deal -> ACE
+    opportunity -> optional co-sell submit. Gated by PROCESS_CALL_ENABLED
+    because it creates a REAL deal in the connected CRM.
+
+    Accepts JSON or multipart (notes + optional file uploads). Requires a
+    HubSpot token with deal + contact write scopes.
+    """
+    if not PROCESS_CALL_ENABLED:
+        return jsonify({"error": "Process Call is disabled. Set process_call_enabled=true in config.json to enable it."}), 403
+    try:
+        is_multipart = request.content_type and request.content_type.startswith('multipart/form-data')
+        if is_multipart:
+            notes = request.form.get('notes', '') or ''
+            hubspot_token = request.form.get('hubspot_token') or None
+            submit_to_aws = (request.form.get('submit_to_aws', '') or '').lower() in ('true', '1', 'yes')
+            blocks = []
+            if notes.strip():
+                blocks.append(notes.strip())
+            for f in request.files.getlist('files'):
+                if not f or not f.filename:
+                    continue
+                try:
+                    text = f.read().decode('utf-8', errors='replace').strip()
+                    if text:
+                        blocks.append(f"=== File: {f.filename} ===\n{text}")
+                except Exception as read_err:
+                    logger.warning(f"Could not read uploaded file {f.filename}: {read_err}")
+            notes = '\n\n'.join(blocks)
+        else:
+            data = request.json or {}
+            notes = data.get('notes') or ''
+            hubspot_token = data.get('hubspot_token') or None
+            submit_to_aws = bool(data.get('submit_to_aws', False))
+
+        if not notes.strip():
+            return jsonify({"error": "Provide call notes (text or a file)"}), 400
+
+        hubspot_token = hubspot_token or os.environ.get('HUBSPOT_BEARER_TOKEN')
+        if not hubspot_token:
+            return jsonify({"error": "HubSpot token is required. Enter it on the CRM → ACE tab and click Load HubSpot Deals first."}), 400
+
+        agent = OrchestratorAgent(hubspot_token=hubspot_token)
+
+        # Validate the token before creating anything, so a bad token fails
+        # fast with a clear message instead of a half-created state.
+        token_check = agent.hubspot_client.validate_token()
+        if not token_check.get("valid"):
+            code = token_check.get("status_code")
+            if code in (401, 403):
+                return jsonify({"error": "HubSpot token is invalid or lacks permissions. "
+                                         "Re-check the token on the CRM → ACE tab (Load HubSpot Deals should succeed), "
+                                         "and ensure it has deal + contact read/write scopes."}), 400
+            return jsonify({"error": f"Could not reach HubSpot to validate the token: {token_check.get('error')}"}), 400
+
+        result = agent.process_call_from_notes(notes, submit_to_aws=submit_to_aws)
+
+        if result.get("success") and result.get("ace_opportunity_id"):
+            # Cache the CRM->ACE mapping so the other tabs can pick it up.
+            crm_to_ace_mapping[f"hubspot:{result['deal_id']}"] = result["ace_opportunity_id"]
+
+        status = 200 if result.get("success") else 500
+        return jsonify(result), status
+    except Exception as e:
+        logger.error(f"Error in process-call: {e}", exc_info=True)
+        return jsonify({"error": "Process call failed. Check the server logs for details."}), 500
 
 
 @app.route('/api/create-from-notes', methods=['POST'])
