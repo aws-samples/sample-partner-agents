@@ -29,6 +29,9 @@ These files have all required ACE fields filled out and are intended for the **�
 |------|----------|----------|-----------------|------------------|
 | `meeting_notes_complete_for_create.txt` | Financial Services | Migration / Database Migration | Co-Sell | Net New Business |
 | `meeting_notes_complete_for_create_healthcare_ml.txt` | Healthcare and Life Sciences | AI Machine Learning and Analytics | For Visibility Only | Expansion |
+| `meeting_notes_medfirst_health.txt` | Healthcare and Life Sciences | AI Machine Learning and Analytics | Co-Sell | Net New Business |
+
+> `meeting_notes_medfirst_health.txt` is the recommended sample for the **Process Call** flow (call notes → HubSpot deal → ACE opportunity → optional co-sell submit). It includes full BANT signals, contacts, and a target close date so the end-to-end flow has everything it needs.
 
 ## Why these scenarios
 
