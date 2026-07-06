@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Salesforce / sfdx
+.sfdx/
+.sf/
+.localdevserver/
+deploy-options.json
+
+# Logs and temp
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/

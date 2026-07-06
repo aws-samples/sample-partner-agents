@@ -432,14 +432,17 @@ class PartnerCentralMCPClient:
             request_payload = mapper.map_opportunity_to_ace(opp, project_title)
             
             logger.info(f"Creating opportunity from Salesforce opportunity {opp.opportunity_id}...")
-            logger.info(f"  PartnerOpportunityIdentifier: {request_payload.get('PartnerOpportunityIdentifier')}")
-            logger.info(f"  TargetCloseDate: {request_payload.get('LifeCycle', {}).get('TargetCloseDate')}")
-            logger.info(f"📤 CREATE OPPORTUNITY REQUEST: {json.dumps(request_payload, separators=(',', ':'))}")
+            has_partner_opp_identifier = bool(request_payload.get('PartnerOpportunityIdentifier'))
+            logger.info("  PartnerOpportunityIdentifier: [REDACTED] (present=%s)", has_partner_opp_identifier)
+            logger.info("  TargetCloseDate: [REDACTED]")
+            logger.info("📤 CREATE OPPORTUNITY REQUEST prepared (payload redacted)")
             
             response = self.pc_client.create_opportunity(**request_payload)
             
-            logger.info(f"📥 CREATE OPPORTUNITY RESPONSE: {json.dumps(response, separators=(',', ':'), default=str)}")
-            logger.info(f"Opportunity created successfully: {response.get('Id', 'Unknown')}")
+            response_id = response.get('Id')
+            masked_response_id = f"***{str(response_id)[-4:]}" if response_id else "Unknown"
+            logger.info(f"📥 CREATE OPPORTUNITY RESPONSE received (Id: {masked_response_id})")
+            logger.info(f"Opportunity created successfully: {masked_response_id}")
             
             return {
                 "success": True,

@@ -63,7 +63,7 @@ import {
   reverseMap,
 } from "../lib/stage-mapping";
 import { resolveStatus } from "../lib/resolve-status";
-import { ACEThrottledError } from "../lib/ace";
+import { ACEThrottledError, describeAceError } from "../lib/ace";
 import type { AceClient } from "../lib/ace";
 import type { HubspotClient } from "../lib/hubspot";
 import { ErrorCode, makeError } from "../lib/errors";
@@ -294,8 +294,7 @@ async function aceFailure(
 ): Promise<ErrorResponse> {
   const isThrottled = err instanceof ACEThrottledError;
   const outCode = isThrottled ? ErrorCode.ACE_THROTTLED : code;
-  const msg =
-    err instanceof Error && err.message ? err.message : "unknown error";
+  const msg = describeAceError(err);
   try {
     await hs.writeDealProperties(dealId, {
       ace_sync_status: "Sync Error",

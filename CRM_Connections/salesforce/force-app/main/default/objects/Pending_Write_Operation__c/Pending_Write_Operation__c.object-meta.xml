@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Pending Write Operation</label>
+    <pluralLabel>Pending Write Operations</pluralLabel>
+    <nameField>
+        <label>Pending Operation Number</label>
+        <type>AutoNumber</type>
+        <displayFormat>PWO-{00000000}</displayFormat>
+        <startingNumber>1</startingNumber>
+    </nameField>
+    <deploymentStatus>Deployed</deploymentStatus>
+    <sharingModel>Private</sharingModel>
+    <enableActivities>false</enableActivities>
+    <enableReports>true</enableReports>
+    <enableHistory>true</enableHistory>
+    <enableSearch>true</enableSearch>
+    <enableFeeds>false</enableFeeds>
+    <visibility>Public</visibility>
+</CustomObject>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Endpoint_Mode__c</fullName>
+    <label>Endpoint Mode</label>
+    <type>Picklist</type>
+    <required>false</required>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+    <valueSet>
+        <restricted>true</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+            <value>
+                <fullName>production</fullName>
+                <default>false</default>
+                <label>production</label>
+            </value>
+            <value>
+                <fullName>sandbox</fullName>
+                <default>false</default>
+                <label>sandbox</label>
+            </value>
+        </valueSetDefinition>
+    </valueSet>
+</CustomField>

@@ -59,6 +59,7 @@ import {
   isSubmitActionVisible,
   missingSubmissionFields,
 } from "./submission-mode";
+import { normalizeCountryCode } from "./country";
 // Per-deployment API base URL. The file is gitignored — `npm install`
 // materialises it from `config.local.ts.example` if missing, and the
 // deploy script (`infra/deploy.sh`) overwrites it with the actual
@@ -101,6 +102,17 @@ const DEAL_PROPERTY_NAMES = [
   "ace_country_code",
   "ace_state_or_region",
   "ace_postal_code",
+  // Previously-defaulted fields, now deal-property-driven. Read so the
+  // card mirrors the backend's no-defaults preconditions (industry,
+  // websiteUrl, currency are required) and the 5-field submission
+  // classifier (delivery model, primary need, customer use case).
+  "ace_industry",
+  "ace_website_url",
+  "ace_currency_code",
+  "ace_delivery_model",
+  "ace_primary_need_from_aws",
+  "ace_customer_use_case",
+  "ace_sales_activities",
   "ace_other_solution_description",
   "ace_marketing_source",
   "ace_marketing_campaign_name",
@@ -165,6 +177,8 @@ type CompanyProps = {
   hs_country_code?: string;
   state?: string;
   zip?: string;
+  website?: string;
+  domain?: string;
 };
 
 /** Shape of the deal-property snapshot kept in local state. */
@@ -192,6 +206,13 @@ type DealProps = {
   ace_country_code?: string;
   ace_state_or_region?: string;
   ace_postal_code?: string;
+  ace_industry?: string;
+  ace_website_url?: string;
+  ace_currency_code?: string;
+  ace_delivery_model?: string;
+  ace_primary_need_from_aws?: string;
+  ace_customer_use_case?: string;
+  ace_sales_activities?: string;
   ace_other_solution_description?: string;
   ace_marketing_source?: string;
   ace_marketing_campaign_name?: string;
@@ -341,6 +362,28 @@ function parseHubspotTimestamp(value: string | undefined): number {
   // Otherwise try ISO 8601 / RFC 3339.
   const parsed = Date.parse(trimmed);
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+/**
+ * True iff `ms` falls on a UTC calendar date strictly after today (UTC).
+ * Mirrors the backend's `isCloseDateFuture` precondition so the readiness
+ * checklist flags a past/today close date before the rep clicks Share —
+ * AWS rejects a non-future `TargetCloseDate` at CreateOpportunity.
+ */
+function isFutureCalendarDate(ms: number): boolean {
+  const d = new Date(ms);
+  const dateUtc = Date.UTC(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate()
+  );
+  const now = new Date();
+  const todayUtc = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  );
+  return dateUtc > todayUtc;
 }
 
 function formatLastSync(value: string | undefined): string {
@@ -651,18 +694,16 @@ function computeShareReadiness(
     });
   }
 
-  // 1. dealname (HubSpot built-in). The backend falls back to a
-  //    canned title when blank, so this is technically optional —
-  //    but reps want their AWS opportunity to carry their HubSpot
-  //    deal name, so we surface it as advisory rather than fully
-  //    optional.
+  // 1. dealname (HubSpot built-in) — now REQUIRED. AWS requires
+  //    Project.Title and the deal name is its only source (the canned
+  //    "Partner Opportunity" default was removed).
   push({
     key: "dealname",
     label: "Deal name",
-    status: nonEmpty(deal.dealname) ? "ok" : "advisory",
+    status: nonEmpty(deal.dealname) ? "ok" : "missing",
     hint: nonEmpty(deal.dealname)
       ? undefined
-      : `Defaults to "Partner Opportunity" when blank.`,
+      : "Sent to AWS as the opportunity title.",
   });
 
   // 2. description (≥ 20 chars after trim).
@@ -679,11 +720,23 @@ function computeShareReadiness(
         : `Currently ${desc.length} characters.`,
   });
 
-  // 3. closedate.
+  // 3. closedate — must be set AND resolve to a future date (AWS rejects
+  //    a past/today TargetCloseDate at CreateOpportunity). Mirrors the
+  //    backend `closedate` + `closeDateFuture` preconditions. An
+  //    unparseable-but-present value skips the future check (AWS handles).
+  const closeDatePresent = nonEmpty(deal.closedate);
+  const closeMs = parseHubspotTimestamp(deal.closedate);
+  const closeDateFutureOk =
+    !Number.isFinite(closeMs) || isFutureCalendarDate(closeMs);
   push({
     key: "closedate",
     label: "Close date",
-    status: nonEmpty(deal.closedate) ? "ok" : "missing",
+    status: !closeDatePresent ? "missing" : !closeDateFutureOk ? "missing" : "ok",
+    hint: !closeDatePresent
+      ? undefined
+      : !closeDateFutureOk
+      ? "Must be a future date."
+      : undefined,
   });
 
   // 4. amount > 0.
@@ -716,21 +769,27 @@ function computeShareReadiness(
   //    backend resolver will pick it up at Share time.
   const dealCountry = deal.ace_country_code?.trim() ?? "";
   const companyCountry = company.hs_country_code?.trim() ?? "";
-  const countryCode = dealCountry || companyCountry;
+  const rawCountry = dealCountry || companyCountry;
+  // Normalise so display names ("United States") resolve to an ISO code
+  // AWS accepts, and so the US-only state rule below engages correctly
+  // (an un-normalised "United States" would skip it AND fail at AWS).
+  const normalizedCountry = normalizeCountryCode(rawCountry);
+  const countryOk = normalizedCountry !== undefined;
   push({
     key: "countryCode",
     label: "Customer country code",
-    status: countryCode.length > 0 ? "ok" : "missing",
-    hint:
-      countryCode.length > 0
-        ? dealCountry.length === 0 && companyCountry.length > 0
-          ? "Inherited from the associated company."
-          : undefined
-        : "Set on the deal directly OR on the associated company.",
+    status: countryOk ? "ok" : "missing",
+    hint: countryOk
+      ? dealCountry.length === 0 && companyCountry.length > 0
+        ? "Inherited from the associated company."
+        : undefined
+      : rawCountry.length > 0
+      ? "Use a 2-letter ISO country code (e.g. US). Set on the deal OR the associated company."
+      : "Set on the deal directly OR on the associated company.",
   });
 
   // 7. State (US-only).
-  if (countryCode === "US") {
+  if (normalizedCountry === "US") {
     const dealState = deal.ace_state_or_region?.trim() ?? "";
     const companyState = company.state?.trim() ?? "";
     const state = dealState || companyState;
@@ -768,6 +827,45 @@ function computeShareReadiness(
           ? "Inherited from the associated company."
           : undefined
         : "Set on the deal directly OR on the associated company.",
+  });
+
+  // 8b. Website URL (deal override OR associated company website/domain).
+  //     AWS requires Customer.Account.WebsiteUrl (no default anymore).
+  const dealWebsite = deal.ace_website_url?.trim() ?? "";
+  const companyWebsite =
+    (company.website?.trim() ?? "") || (company.domain?.trim() ?? "");
+  const website = dealWebsite || companyWebsite;
+  push({
+    key: "websiteUrl",
+    label: "Customer website URL",
+    status: website.length > 0 ? "ok" : "missing",
+    hint:
+      website.length > 0
+        ? dealWebsite.length === 0 && companyWebsite.length > 0
+          ? "Inherited from the associated company."
+          : undefined
+        : "Set on the deal directly OR on the associated company.",
+  });
+
+  // 8c. Industry — AWS requires Customer.Account.Industry (no default).
+  push({
+    key: "industry",
+    label: "Customer industry",
+    status: nonEmpty(deal.ace_industry) ? "ok" : "missing",
+    hint: nonEmpty(deal.ace_industry)
+      ? undefined
+      : "Pick the customer's industry on the deal.",
+  });
+
+  // 8d. Currency code — AWS requires ExpectedCustomerSpend.CurrencyCode
+  //     (no "USD" default anymore).
+  push({
+    key: "currencyCode",
+    label: "Currency code",
+    status: nonEmpty(deal.ace_currency_code) ? "ok" : "missing",
+    hint: nonEmpty(deal.ace_currency_code)
+      ? undefined
+      : "Set the deal's currency (e.g. USD).",
   });
 
   // 9. Solution Offering — backend accepts EITHER `ace_solutions`
@@ -1002,7 +1100,7 @@ export const AceShareCard: React.FC<AceShareCardProps> = ({
   const associationsResult = useAssociations(
     {
       toObjectType: "Companies",
-      properties: ["hs_country_code", "state", "zip"],
+      properties: ["hs_country_code", "state", "zip", "website", "domain"],
       pageLength: 1,
     },
   );
@@ -1015,6 +1113,10 @@ export const AceShareCard: React.FC<AceShareCardProps> = ({
           state:
             associationsResult.results[0].properties.state ?? undefined,
           zip: associationsResult.results[0].properties.zip ?? undefined,
+          website:
+            associationsResult.results[0].properties.website ?? undefined,
+          domain:
+            associationsResult.results[0].properties.domain ?? undefined,
         }
       : {};
   const company: CompanyProps = companyPropsOverride ?? fetchedCompany;
@@ -1163,46 +1265,68 @@ export const AceShareCard: React.FC<AceShareCardProps> = ({
   // missing field names in the helper line.
   const missingFields = missingSubmissionFields(deal);
 
-  // When the opportunity is already saved on AWS as a draft (oppId
-  // present + aws_review_status ∈ {"Pending Submission", ""}),
-  // Share is hidden entirely. Editing the opp in this state without
-  // submitting is no longer a supported action — the AWS Sandbox
-  // UpdateOpportunity API silently strips ReviewStatus to null when
-  // called against a Pending Submission opp, which permanently
-  // orphans the opportunity. The backend payload preserves
-  // ReviewStatus as belt-and-braces, but the safest UX is to remove
-  // the Share button so the rep simply cannot trigger the path.
-  // Reps who need to push HubSpot edits to a saved draft can: edit
-  // in HubSpot now, click Submit to advance the opp out of draft
-  // state, then the next Refresh / EventBridge auto-pull will
-  // reconcile the deal back from AWS.
+  // Unpushed edits gate (R-PUSH-BEFORE-SUBMIT). Submit only runs
+  // StartEngagement against whatever is ALREADY on the AWS opportunity —
+  // it does NOT push the deal's current field values. So if the rep has
+  // edited the deal since the last successful Share/Refresh (the
+  // "Pending Sync" state), the opp on AWS is stale and a Submit would
+  // fail AWS validation. Reuse the exact same staleness signal the Sync
+  // Status field shows ("Pending Sync" = hs_lastmodifieddate is past
+  // ace_last_sync + skew) to LOCK Submit until the rep clicks
+  // "Push updates to AWS". The skew window already prevents a false lock
+  // immediately after a push.
+  const hasUnpushedEdits = deriveDisplayedSyncStatus(deal) === "Pending Sync";
+
+  // Create-readiness (no-opp only): are ALL create-time preconditions
+  // met (amount, future close date, ISO country, US state, a solution,
+  // description …)? Mirrors the backend `validatePreconditions` via the
+  // same `computeShareReadiness` the checklist renders. Combined with
+  // the submission-field classifier, this decides whether the Share
+  // click will create-and-submit or just save a draft.
+  const createReady = hasOpportunity
+    ? true
+    : computeShareReadiness(deal, company).allRequiredOk;
+
+  // The next Share click creates AND submits only when the deal is
+  // fully ready: every create precondition met AND the submission-only
+  // fields (involvement type, visibility) present. Otherwise the click
+  // saves a draft, and the readiness checklist above lists whatever is
+  // still missing. This keeps the button honest — it never promises a
+  // submit it can't deliver — while preserving the "save a draft now,
+  // submit later" workflow.
+  const readyToCreateAndSubmit =
+    !hasOpportunity && createReady && submissionMode === "Create_And_Submit";
+
+  // `isDraftPendingSubmission`: the opp is saved on AWS but not yet
+  // submitted (oppId present + aws_review_status ∈ {"Pending
+  // Submission", ""}). Used to render the missing-fields hint next to
+  // the Submit button below.
   const isDraftPendingSubmission = hasOpportunity && submitVisible;
 
-  // Share button visibility rules. The "Share to AWS (...)" framing
-  // only makes sense in two states:
-  //   (a) No opp yet → Share creates one (Create_And_Submit or
-  //       Create_Only depending on the classifier).
-  //   (b) Opp exists AND AWS allows updates AND we're not in the
-  //       draft-already-saved state.
-  // Hidden in every other case:
-  //   - `isDraftPendingSubmission` — see the long comment above; the
-  //     SDK's UpdateOpportunity strips ReviewStatus.
-  //   - `reviewBlocked` (Submitted / In Review) — AWS rejects every
-  //     update during the review window, and the card already shows
-  //     a "Updates blocked while AWS is reviewing" Alert. Rendering
-  //     a Share button below that contradicts the alert and lets
-  //     the rep trigger a guaranteed PRECONDITION failure.
-  const shareHidden = isDraftPendingSubmission || reviewBlocked;
+  // Share button visibility. Share is hidden ONLY while AWS is actively
+  // reviewing (Submitted / In Review) — AWS rejects every
+  // UpdateOpportunity during that window, and the "Updates blocked while
+  // AWS is reviewing" Alert already explains it.
+  //
+  // In every other state Share is shown:
+  //   - No opp yet → Share creates one ("save as draft" until all
+  //     fields are ready, then "creates and submits").
+  //   - Opp exists and editable — INCLUDING a saved-but-unsubmitted
+  //     draft — → "Push updates to AWS". We used to hide Share for the
+  //     draft state to dodge an old Sandbox bug where UpdateOpportunity
+  //     stripped ReviewStatus to null; the backend now preserves
+  //     ReviewStatus on every update (R-PREVENT-NULL-REVIEW-STATUS
+  //     passthrough in payload.ts), so pushing updates to a draft is
+  //     safe and is the expected workflow.
+  const shareHidden = reviewBlocked;
 
-  // R1.6, R1.7: helper line directly under the Share button. Only
-  // rendered when the Share button itself is rendered — i.e. when
-  // the opp is not already saved as a draft on AWS.
-  const helperLine =
-    submissionMode === "Create_And_Submit"
-      ? "This click will submit the opportunity to AWS for review."
-      : missingFields.length > 0
-      ? `This click will save the opportunity to AWS as a draft. Submit for review separately. Missing for submission: ${missingFields.join(", ")}.`
-      : "This click will save the opportunity to AWS as a draft. Submit for review separately.";
+  // R1.6, R1.7: helper line directly under the Share button (no-opp
+  // create flow only — suppressed when the opp already exists).
+  const helperLine = readyToCreateAndSubmit
+    ? "This click will submit the opportunity to AWS for review."
+    : missingFields.length > 0
+    ? `This click will save the opportunity to AWS as a draft. Submit for review separately. Missing for submission: ${missingFields.join(", ")}.`
+    : "This click will save the opportunity to AWS as a draft. Submit for review separately.";
 
   // R8.4: AWS-side submission failure detection. The Submit_Function
   // (and Share's create-and-submit path) write `ace_sync_error` with
@@ -1336,7 +1460,7 @@ export const AceShareCard: React.FC<AceShareCardProps> = ({
                 ? "Sharing…"
                 : hasOpportunity
                 ? "Push updates to AWS"
-                : submissionMode === "Create_And_Submit"
+                : readyToCreateAndSubmit
                 ? "Share to AWS (creates and submits)"
                 : "Share to AWS (save as draft)"}
             </Button>
@@ -1412,12 +1536,27 @@ export const AceShareCard: React.FC<AceShareCardProps> = ({
                 Populate these fields on the deal, then click Submit.
               </Text>
             )}
+            {/* Push-before-Submit lock. Submit only runs StartEngagement
+                against whatever is ALREADY on the AWS opportunity — it
+                does not push the deal's current field values. When the
+                deal has unpushed edits ("Pending Sync"), Submit is
+                DISABLED (above) and we explain why here, so the rep
+                pushes first instead of triggering a guaranteed AWS
+                validation failure. */}
+            {isDraftPendingSubmission && hasUnpushedEdits && (
+              <Text>
+                You have edits that aren&rsquo;t on AWS yet. Click
+                &ldquo;Push updates to AWS&rdquo; first — Submit unlocks
+                once your changes are synced.
+              </Text>
+            )}
             <Flex direction="row" gap="sm">
               <Button
                 onClick={handleSubmit}
                 disabled={
                   busy ||
                   missingFields.length > 0 ||
+                  hasUnpushedEdits ||
                   !!awsIncompatibility
                 }
                 variant="primary"

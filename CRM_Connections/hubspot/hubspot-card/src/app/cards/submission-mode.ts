@@ -15,6 +15,16 @@ export type SubmissionMode = "Create_And_Submit" | "Create_Only";
 export const SUBMISSION_REQUIRED_FIELDS = [
   "ace_involvement_type",
   "ace_visibility",
+  "ace_delivery_model",
+  "ace_primary_need_from_aws",
+  "ace_customer_use_case",
+  // SalesActivities is set on the Project at Create/Update time, but AWS
+  // ALSO enforces it as a hard requirement at engagement-task (Submit)
+  // time: StartEngagement fails with
+  // `OPPORTUNITY_VALIDATION_FAILED project.salesActivities is required`.
+  // Gating it here keeps Share in Create_Only (draft) until it's set, and
+  // makes the Submit precondition catch it before the async task fails.
+  "ace_sales_activities",
 ] as const;
 
 /** AWS_Review_Status values where Submit_Action is allowed. */
@@ -38,6 +48,10 @@ export type SubmissionInputs = {
   ace_opportunity_id?: string;
   ace_involvement_type?: string;
   ace_visibility?: string;
+  ace_delivery_model?: string;
+  ace_primary_need_from_aws?: string;
+  ace_customer_use_case?: string;
+  ace_sales_activities?: string;
   aws_review_status?: string;
 };
 

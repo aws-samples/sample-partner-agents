@@ -2,7 +2,6 @@ import { describe, test, expect } from "vitest";
 import {
   buildCreatePayload,
   buildUpdatePayload,
-  STAGE_TO_NEXT_STEPS,
 } from "../lib/payload";
 import type { StageMapping } from "../lib/stage-mapping";
 import type { DealProps, CompanyProps } from "../lib/preconditions";
@@ -38,6 +37,18 @@ function baseDeal(): DealProps {
     contract_term__months_: "12",
     closedate: "2025-12-15",
     description: "Customer needs to migrate SAP to AWS cloud.",
+    // Previously-defaulted fields are now deal-property-driven. A fully
+    // populated base deal lets the create/update tests assert real values;
+    // the "minimal deal omits everything" test below proves nothing is
+    // injected when these are blank.
+    ace_currency_code: "USD",
+    ace_industry: "Software and Internet",
+    ace_delivery_model: "SaaS or PaaS",
+    ace_customer_use_case: "Business Applications & Contact Center",
+    ace_primary_need_from_aws: "Co-Sell - Architectural Validation",
+    ace_opportunity_type: "Net New Business",
+    ace_national_security: "No",
+    hs_next_step: "Discuss with AWS",
   };
 }
 
@@ -51,28 +62,39 @@ function baseCompany(): CompanyProps {
 }
 
 describe("buildCreatePayload", () => {
-  test("emits all hardcoded fields and derived ClientToken for dealId=12345", () => {
-    const payload = buildCreatePayload(12345, baseDeal(), baseCompany(), {});
+  test("emits only deal-driven fields + derived ClientToken for dealId=12345 (no hardcoded defaults)", () => {
+    const payload = buildCreatePayload(
+      12345,
+      baseDeal(),
+      baseCompany(),
+      MAPPING,
+      {}
+    );
     expect(payload.Catalog).toBe("Sandbox");
     // Cross-language verified with Python uuid.uuid5 (PAYLOAD_VERSION="v6"):
     //   uuid.uuid5(uuid.NAMESPACE_URL, "hubspot-deal-12345-v6")
     //   → 4e848cd7-2c56-5f88-b8c8-160af5cf1b45
     expect(payload.ClientToken).toBe("4e848cd7-2c56-5f88-b8c8-160af5cf1b45");
-    expect(payload.OpportunityType).toBe("Net New Business");
-    expect(payload.Origin).toBe("Partner Referral");
     // PartnerOpportunityIdentifier is REQUIRED for ACE to populate
     // Lifecycle.ReviewStatus on Create. We use the dealId stringified.
     expect(payload.PartnerOpportunityIdentifier).toBe("12345");
-    // Default Marketing.Source is "None" (= "Is opportunity from marketing activity?" → No)
-    // when neither ace_marketing_source nor ACE_DEFAULT_MARKETING_SOURCE is set.
-    // ACE rejects AwsFundingUsed when Source is None, so the field is omitted.
-    expect(payload.Marketing).toEqual({ Source: "None" });
+    // `Origin` is no longer sent at all (was hardcoded "Partner Referral").
+    expect((payload as Record<string, unknown>).Origin).toBeUndefined();
+    // OpportunityType / PrimaryNeedsFromAws / NationalSecurity now flow from
+    // the deal properties — not hardcoded constants.
+    expect(payload.OpportunityType).toBe("Net New Business");
     expect(payload.PrimaryNeedsFromAws).toEqual([
       "Co-Sell - Architectural Validation",
     ]);
+    expect(payload.NationalSecurity).toBe("No");
+    // Marketing is omitted entirely when ace_marketing_source is blank
+    // (no "None" default).
+    expect(payload.Marketing).toBeUndefined();
 
+    // Create stage reflects the deal's OWN mapped stage (no hardcoded
+    // "Qualified"). NextSteps comes from hs_next_step (omitted when blank).
     expect(payload.LifeCycle.Stage).toBe("Qualified");
-    expect(payload.LifeCycle.NextSteps).toBe(STAGE_TO_NEXT_STEPS.Qualified);
+    expect(payload.LifeCycle.NextSteps).toBe("Discuss with AWS");
     expect(payload.LifeCycle.TargetCloseDate).toBe("2025-12-15");
 
     expect(payload.Project.Title).toBe("Acme Migration");
@@ -80,15 +102,12 @@ describe("buildCreatePayload", () => {
       "Customer needs to migrate SAP to AWS cloud."
     );
     expect(payload.Project.DeliveryModels).toEqual(["SaaS or PaaS"]);
-    // Default-default when neither ace_customer_use_case nor
-    // ACE_DEFAULT_USE_CASE is set. See lib/config.ts:DEFAULT_ACE_USE_CASE.
     expect(payload.Project.CustomerUseCase).toBe(
       "Business Applications & Contact Center"
     );
-    expect(payload.Project.SalesActivities).toEqual([
-      "Initialized discussions with customer",
-      "Customer has shown interest in solution",
-    ]);
+    // SalesActivities is omitted when ace_sales_activities is blank
+    // (no canned "Initialized discussions…" default).
+    expect(payload.Project.SalesActivities).toBeUndefined();
 
     const spend = (payload.Project.ExpectedCustomerSpend as SpendLine[])[0];
     expect(spend).toEqual({
@@ -101,8 +120,6 @@ describe("buildCreatePayload", () => {
     const account = payload.Customer.Account;
     expect(account.CompanyName).toBe("Acme Corp");
     expect(account.Industry).toBe("Software and Internet");
-    // baseCompany now carries state/zip (matches the new precondition
-    // requirements); the address block surfaces all four fields.
     expect(account.Address).toEqual({
       CountryCode: "US",
       PostalCode: "98101",
@@ -110,10 +127,60 @@ describe("buildCreatePayload", () => {
     });
   });
 
-  test("defaults Project.Title to 'Partner Opportunity' when dealname empty", () => {
-    const deal = { ...baseDeal(), dealname: "" };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
-    expect(payload.Project.Title).toBe("Partner Opportunity");
+  test("minimal deal omits every optional field (no hardcoded defaults injected)", () => {
+    // A deal with only the structurally-required fields populated must
+    // produce a payload that carries NONE of the previously-defaulted
+    // values. This is the core no-defaults guarantee.
+    const minimal: DealProps = {
+      dealstage: "qualified",
+      dealname: "Bare Deal",
+      amount: "12000",
+      contract_term__months_: "12",
+      closedate: "2025-12-15",
+      description: "Customer needs to migrate SAP to AWS cloud.",
+    };
+    const payload = buildCreatePayload(1, minimal, baseCompany(), MAPPING, {});
+
+    expect((payload as Record<string, unknown>).Origin).toBeUndefined();
+    expect(payload.OpportunityType).toBeUndefined();
+    expect(payload.Marketing).toBeUndefined();
+    expect(payload.PrimaryNeedsFromAws).toBeUndefined();
+    expect(payload.NationalSecurity).toBeUndefined();
+    expect(payload.Project.DeliveryModels).toBeUndefined();
+    expect(payload.Project.CustomerUseCase).toBeUndefined();
+    expect(payload.Project.SalesActivities).toBeUndefined();
+    expect(payload.LifeCycle.NextSteps).toBeUndefined();
+    expect(payload.Customer.Account.Industry).toBeUndefined();
+    // CurrencyCode dropped from the spend line when ace_currency_code blank.
+    const spend = (payload.Project.ExpectedCustomerSpend as Partial<SpendLine>[])[0];
+    expect(spend.CurrencyCode).toBeUndefined();
+    expect(spend.Amount).toBe("1000");
+    expect(spend.Frequency).toBe("Monthly");
+  });
+
+  test("create stage reflects the deal's mapped stage (no hardcoded Qualified)", () => {
+    const deal = { ...baseDeal(), dealstage: "techvalid" };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.LifeCycle.Stage).toBe("Technical Validation");
+  });
+
+  test("create throws when the deal's stage cannot be mapped", () => {
+    const deal = { ...baseDeal(), dealstage: "bogus-stage" };
+    expect(() =>
+      buildCreatePayload(1, deal, baseCompany(), MAPPING, {})
+    ).toThrow();
+  });
+
+  test("Project.Title is the dealname verbatim (no 'Partner Opportunity' default)", () => {
+    const deal = { ...baseDeal(), dealname: "New Title from Deal" };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Project.Title).toBe("New Title from Deal");
+  });
+
+  test("Project.Title is empty when dealname is blank (precondition gates this upstream)", () => {
+    const deal = { ...baseDeal(), dealname: "  " };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Project.Title).toBe("");
   });
 
   test("CustomerUseCase: per-deal property takes precedence over env default", () => {
@@ -121,7 +188,7 @@ describe("buildCreatePayload", () => {
       ...baseDeal(),
       ace_customer_use_case: "Containers & Serverless",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {
       aceDefaultUseCase: "Database",
     });
     expect(payload.Project.CustomerUseCase).toBe("Containers & Serverless");
@@ -129,51 +196,59 @@ describe("buildCreatePayload", () => {
 
   test("CustomerUseCase: env default applies when per-deal property is empty", () => {
     const deal = { ...baseDeal(), ace_customer_use_case: "  " };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {
       aceDefaultUseCase: "Database",
     });
     expect(payload.Project.CustomerUseCase).toBe("Database");
   });
 
-  test("CustomerUseCase: hard fallback when neither per-deal nor env is set", () => {
-    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), {});
-    expect(payload.Project.CustomerUseCase).toBe(
-      "Business Applications & Contact Center"
-    );
+  test("CustomerUseCase: omitted when neither per-deal nor env is set (no hard default)", () => {
+    const deal = { ...baseDeal(), ace_customer_use_case: "" };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Project.CustomerUseCase).toBeUndefined();
   });
 
-  test("Marketing.Source: 'Yes' on the deal translates to ACE 'Marketing Activity'", () => {
-    const deal = { ...baseDeal(), ace_marketing_source: "Yes" };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {
-      aceDefaultMarketingSource: "No",
-    });
-    expect(payload.Marketing.Source).toBe("Marketing Activity");
-    expect(payload.Marketing.AwsFundingUsed).toBe("No");
+  test("Marketing.Source: 'Yes' translates to 'Marketing Activity'; AwsFundingUsed flows from the deal", () => {
+    const deal = {
+      ...baseDeal(),
+      ace_marketing_source: "Yes",
+      ace_aws_funding_used: "No",
+    };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Marketing?.Source).toBe("Marketing Activity");
+    expect(payload.Marketing?.AwsFundingUsed).toBe("No");
   });
 
   test("Marketing.Source: legacy literal 'Marketing Activity' passes through", () => {
-    const deal = { ...baseDeal(), ace_marketing_source: "Marketing Activity" };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {
-      aceDefaultMarketingSource: "None",
-    });
-    expect(payload.Marketing.Source).toBe("Marketing Activity");
-    // When Source is "Marketing Activity", AwsFundingUsed must be present.
-    expect(payload.Marketing.AwsFundingUsed).toBe("No");
+    const deal = {
+      ...baseDeal(),
+      ace_marketing_source: "Marketing Activity",
+      ace_aws_funding_used: "Yes",
+    };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Marketing?.Source).toBe("Marketing Activity");
+    expect(payload.Marketing?.AwsFundingUsed).toBe("Yes");
   });
 
-  test("Marketing.Source: env default applies when per-deal is empty", () => {
-    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), {
+  test("Marketing.Source: 'No' on the deal maps to 'None' with no AwsFundingUsed", () => {
+    const deal = { ...baseDeal(), ace_marketing_source: "No" };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Marketing).toEqual({ Source: "None" });
+  });
+
+  test("Marketing.Source: env default applies when per-deal is blank", () => {
+    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), MAPPING, {
       aceDefaultMarketingSource: "Yes",
+      aceDefaultAwsFundingUsed: "No",
     });
-    expect(payload.Marketing.Source).toBe("Marketing Activity");
-    expect(payload.Marketing.AwsFundingUsed).toBe("No");
+    expect(payload.Marketing?.Source).toBe("Marketing Activity");
+    expect(payload.Marketing?.AwsFundingUsed).toBe("No");
   });
 
-  test("Marketing.Source: hard fallback to 'None' when nothing is set", () => {
-    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), {});
-    expect(payload.Marketing.Source).toBe("None");
-    // Mutual-exclusion: AwsFundingUsed must be absent when Source is None.
-    expect(payload.Marketing.AwsFundingUsed).toBeUndefined();
+  test("Marketing is omitted entirely when nothing is set (no 'None' default)", () => {
+    // baseDeal carries no ace_marketing_source and the config is empty.
+    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), MAPPING, {});
+    expect(payload.Marketing).toBeUndefined();
   });
 
   test("optional address fields flow to Customer.Account.Address", () => {
@@ -183,7 +258,7 @@ describe("buildCreatePayload", () => {
       zip: "98101",
       state: "WA",
     };
-    const payload = buildCreatePayload(1, baseDeal(), company, {});
+    const payload = buildCreatePayload(1, baseDeal(), company, MAPPING, {});
     expect(payload.Customer.Account.Address).toEqual({
       CountryCode: "US",
       City: "Seattle",
@@ -198,35 +273,21 @@ describe("buildCreatePayload", () => {
       ace_sales_activities:
         "Initialized discussions with customer;Conducted POC / Demo",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     expect(payload.Project.SalesActivities).toEqual([
       "Initialized discussions with customer",
       "Conducted POC / Demo",
     ]);
   });
 
-  test("blank ace_sales_activities falls back to the canned create-stage default", () => {
-    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), {});
-    expect(payload.Project.SalesActivities).toEqual([
-      "Initialized discussions with customer",
-      "Customer has shown interest in solution",
-    ]);
-  });
-
-  test("Project.Title is sourced from dealname", () => {
-    const deal = { ...baseDeal(), dealname: "New Title from Deal" };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
-    expect(payload.Project.Title).toBe("New Title from Deal");
-  });
-
-  test("Project.Title falls back to default when dealname is blank", () => {
-    const deal = { ...baseDeal(), dealname: "  " };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
-    expect(payload.Project.Title).toBe("Partner Opportunity");
+  test("blank ace_sales_activities omits Project.SalesActivities (no canned default)", () => {
+    const deal = { ...baseDeal(), ace_sales_activities: "" };
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
+    expect(payload.Project.SalesActivities).toBeUndefined();
   });
 
   test("editable Project fields are omitted when blank (no empty strings on wire)", () => {
-    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), {});
+    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), MAPPING, {});
     expect(payload.Project.AdditionalComments).toBeUndefined();
     expect(payload.Project.OtherCompetitorNames).toBeUndefined();
     expect(payload.Project.OtherSolutionDescription).toBeUndefined();
@@ -245,7 +306,7 @@ describe("buildCreatePayload", () => {
       ace_aws_partition: "aws-eusc",
       ace_apn_programs: "Well-Architected;Windows",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     expect(payload.Project.AdditionalComments).toBe("extra info");
     expect(payload.Project.OtherCompetitorNames).toBe("Acme Cloud");
     expect(payload.Project.OtherSolutionDescription).toBe("custom thing");
@@ -258,7 +319,7 @@ describe("buildCreatePayload", () => {
   });
 
   test("Customer.Account.AwsAccountId / Duns / StreetAddress are omitted when blank", () => {
-    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), {});
+    const payload = buildCreatePayload(1, baseDeal(), baseCompany(), MAPPING, {});
     expect(payload.Customer.Account.AwsAccountId).toBeUndefined();
     expect(payload.Customer.Account.Duns).toBeUndefined();
     const address = payload.Customer.Account.Address as
@@ -274,7 +335,7 @@ describe("buildCreatePayload", () => {
       ace_duns: "987654321",
       ace_street_address: "1 Infinite Loop",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     expect(payload.Customer.Account.AwsAccountId).toBe("123456789012");
     expect(payload.Customer.Account.Duns).toBe("987654321");
     const address = payload.Customer.Account.Address as Record<string, string>;
@@ -283,25 +344,32 @@ describe("buildCreatePayload", () => {
 
   test("website with scheme passes through unchanged", () => {
     const company = { ...baseCompany(), website: "https://acme.io" };
-    const payload = buildCreatePayload(1, baseDeal(), company, {});
+    const payload = buildCreatePayload(1, baseDeal(), company, MAPPING, {});
     expect(payload.Customer.Account.WebsiteUrl).toBe("https://acme.io");
   });
 
   test("website without scheme gets 'https://' prepended", () => {
     const company = { ...baseCompany(), website: "acme.io" };
-    const payload = buildCreatePayload(1, baseDeal(), company, {});
+    const payload = buildCreatePayload(1, baseDeal(), company, MAPPING, {});
     expect(payload.Customer.Account.WebsiteUrl).toBe("https://acme.io");
   });
 
   test("domain fallback when no website", () => {
     const company = { ...baseCompany(), domain: "acme.io" };
-    const payload = buildCreatePayload(1, baseDeal(), company, {});
+    const payload = buildCreatePayload(1, baseDeal(), company, MAPPING, {});
     expect(payload.Customer.Account.WebsiteUrl).toBe("https://acme.io");
+  });
+
+  test("ace_website_url on the deal wins over the company website", () => {
+    const company = { ...baseCompany(), website: "https://from-company.io" };
+    const deal = { ...baseDeal(), ace_website_url: "deal-site.com" };
+    const payload = buildCreatePayload(1, deal, company, MAPPING, {});
+    expect(payload.Customer.Account.WebsiteUrl).toBe("https://deal-site.com");
   });
 
   test("monthly amount: whole-number result formatted as integer", () => {
     const deal = { ...baseDeal(), amount: "1500", contract_term__months_: "3" };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     const spend = (payload.Project.ExpectedCustomerSpend as SpendLine[])[0];
     expect(spend.Amount).toBe("500");
   });
@@ -312,7 +380,7 @@ describe("buildCreatePayload", () => {
       amount: "1234.5",
       contract_term__months_: "2",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     const spend = (payload.Project.ExpectedCustomerSpend as SpendLine[])[0];
     expect(spend.Amount).toBe("617.25");
   });
@@ -323,7 +391,7 @@ describe("buildCreatePayload", () => {
       amount: "5000",
       contract_term__months_: "0",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     const spend = (payload.Project.ExpectedCustomerSpend as SpendLine[])[0];
     expect(spend.Amount).toBe("416.67");
   });
@@ -335,7 +403,7 @@ describe("buildCreatePayload", () => {
       ...baseDeal(),
       description: "This is 20 chars ok.",
     };
-    const payload = buildCreatePayload(1, deal, baseCompany(), {});
+    const payload = buildCreatePayload(1, deal, baseCompany(), MAPPING, {});
     expect(payload.Project.CustomerBusinessProblem).toBe("This is 20 chars ok.");
   });
 
@@ -345,21 +413,21 @@ describe("buildCreatePayload", () => {
     // fallback so the field always carries something non-empty.
     // Case 1: associated company name wins.
     const deal1 = baseDeal();
-    let p = buildCreatePayload(1, deal1, baseCompany(), {});
+    let p = buildCreatePayload(1, deal1, baseCompany(), MAPPING, {});
     expect(
       (p.Project.ExpectedCustomerSpend as SpendLine[])[0].TargetCompany
     ).toBe("Acme Corp");
 
     // Case 2: no company → deal-level ace_company_name takes over.
     const deal2 = { ...baseDeal(), ace_company_name: "Reverse-synced Co" };
-    p = buildCreatePayload(1, deal2, undefined, {});
+    p = buildCreatePayload(1, deal2, undefined, MAPPING, {});
     expect(
       (p.Project.ExpectedCustomerSpend as SpendLine[])[0].TargetCompany
     ).toBe("Reverse-synced Co");
 
     // Case 3: neither → "AWS" sentinel keeps the request valid.
     const deal3 = baseDeal();
-    p = buildCreatePayload(1, deal3, undefined, {});
+    p = buildCreatePayload(1, deal3, undefined, MAPPING, {});
     expect(
       (p.Project.ExpectedCustomerSpend as SpendLine[])[0].TargetCompany
     ).toBe("AWS");
@@ -368,7 +436,7 @@ describe("buildCreatePayload", () => {
   test("TargetCompany is truncated to 80 chars (regex max)", () => {
     const longName = "A".repeat(120);
     const deal = { ...baseDeal(), ace_company_name: longName };
-    const p = buildCreatePayload(1, deal, undefined, {});
+    const p = buildCreatePayload(1, deal, undefined, MAPPING, {});
     expect(
       (p.Project.ExpectedCustomerSpend as SpendLine[])[0].TargetCompany,
     ).toHaveLength(80);
@@ -390,9 +458,7 @@ describe("buildUpdatePayload", () => {
     expect(payload.Identifier).toBe("O-123");
     expect(payload.LastModifiedDate).toBe("2025-04-29T12:00:00Z");
     expect(payload.LifeCycle.Stage).toBe("Technical Validation");
-    expect(payload.LifeCycle.NextSteps).toBe(
-      STAGE_TO_NEXT_STEPS["Technical Validation"]
-    );
+    expect(payload.LifeCycle.NextSteps).toBe("Discuss with AWS");
     // Update preserves the partner-side identifier so ACE keeps the
     // opportunity's submission state coherent.
     expect(payload.PartnerOpportunityIdentifier).toBe("99");
@@ -409,7 +475,7 @@ describe("buildUpdatePayload", () => {
       MAPPING
     );
     expect(payload.LifeCycle.Stage).toBe("Closed Lost");
-    expect(payload.LifeCycle.NextSteps).toBe(STAGE_TO_NEXT_STEPS["Closed Lost"]);
+    expect(payload.LifeCycle.NextSteps).toBe("Discuss with AWS");
   });
 
   test("ace_closed_lost_reason is sent only when stage is Closed Lost", () => {
@@ -732,13 +798,18 @@ describe("snapshotToProps round-trip (Refresh writes AWS → HubSpot)", () => {
     expect(props.ace_solutions).toBe("S-FROM-SUMMARY");
   });
 
-  test("missing summary leaves InvolvementType / Visibility / Solutions blank", () => {
+  test("missing summary omits InvolvementType / Visibility / Solutions (non-destructive)", () => {
+    // Non-destructive reverse-sync: when AWS has no value for a
+    // partner-editable input, snapshotToProps OMITS the key rather than
+    // writing "", so a locally-set value on the deal is preserved. This
+    // is what lets a partner populate involvement/visibility and submit
+    // without Refresh wiping them first.
     const opp = { LifeCycle: { Stage: "Prospect" } };
     const snap = snapshotFromOpportunity(opp, "Synced");
-    const props = snapshotToProps(snap, baseDeal());
-    expect(props.ace_involvement_type).toBe("");
-    expect(props.ace_visibility).toBe("");
-    expect(props.ace_solutions).toBe("");
+    const props = snapshotToProps(snap, baseDeal()) as Record<string, string>;
+    expect("ace_involvement_type" in props).toBe(false);
+    expect("ace_visibility" in props).toBe(false);
+    expect("ace_solutions" in props).toBe(false);
   });
 
   test("AwsOpportunitySummary.OpportunityTeam → AWS-team mirror fields", () => {

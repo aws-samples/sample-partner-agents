@@ -124,9 +124,9 @@ done
 
 > **Note**: the async Lambda also reads `AGENT_JOB_TABLE` from its environment (defaults to `ace-agent-jobs`). If you customised it, include `AGENT_JOB_TABLE=<your-name>` in the variables block. Read the existing values first via `aws lambda get-function-configuration`.
 
-## Configuring catalog (Sandbox vs production AWS)
+## Configuring the catalog (Sandbox → production `AWS`)
 
-Default: `Sandbox`. To enable production:
+This sample uses the `Sandbox` catalog. To adapt it for the production (`AWS`) catalog:
 
 1. **Update IAM.** Edit `cloudformation.yaml` and replace `AWSPartnerCentralSandboxFullAccess` with `AWSPartnerCentralFullAccess`, then redeploy via `./agent-infra/deploy.sh`.
 2. **Update the catalog flag.** Push the new value:
