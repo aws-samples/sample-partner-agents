@@ -93,6 +93,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 - **AI-Powered Generation**: Use Claude (via Amazon Bedrock, orchestrated with the Strands Agents SDK) to create actionable next steps
 - **AWS Marketplace Catalog**: Query offers and products
 - **MCP Integration**: Update Partner Central opportunities via the Partner Central Agent
+- **Process Call (Demo UI)**: Turn raw call/meeting notes into a co-sell opportunity end-to-end — extract fields, create a HubSpot deal + contact, have the Partner Central Agent create the ACE opportunity, and optionally submit it for co-sell. Disabled by default (it creates real CRM and ACE records)
 
 ## Prerequisites
 
@@ -447,6 +448,7 @@ Set `catalog` to `"AWS"` for production or `"Sandbox"` for testing.
 | `PIPEDRIVE_API_TOKEN` | Pipedrive API token | For Pipedrive |
 | `PIPEDRIVE_INSTANCE_URL` | Pipedrive instance URL | For Pipedrive |
 | `BEDROCK_MODEL_ID` | Pin a specific Bedrock Claude model ID; otherwise the first working model from a built-in candidate list is used | Optional |
+| `PROCESS_CALL_ENABLED` | Enable the Demo UI "Process Call" flow (`true`/`1`/`yes`). Creates real CRM + ACE records, so it's off by default | Optional |
 
 ### Optional: Demo UI Authentication
 
@@ -466,6 +468,22 @@ export DEMO_AUTH_ENABLED=true
 export DEMO_AUTH_USERNAME=myuser
 export DEMO_AUTH_PASSWORD=mypass
 ```
+
+### Optional: Process Call (Demo UI)
+
+The **Process Call** tab in the Demo UI turns raw call/meeting notes into a co-sell opportunity in one flow. Because it creates **real** CRM deals and ACE opportunities, it is **disabled by default** and gated by the `process_call_enabled` field in `config.json`:
+
+- `false` (default) — the tab returns `403` and no records are created
+- `true` — the flow is active
+
+Override via environment variable (takes precedence over `config.json`):
+
+```bash
+export PROCESS_CALL_ENABLED=true
+python demo_ui.py
+```
+
+Requires `HUBSPOT_BEARER_TOKEN` (for the CRM deal step). Endpoint: `POST /api/process-call` on the Demo UI (port 8002), accepting call notes as text or an uploaded file, with an optional `submit_to_aws` flag.
 
 ### Optional: Slack Integration
 
@@ -544,6 +562,16 @@ python orchestrator_agent.py -o O15081741 -s partner-deals -p "Summarize recent 
 1. **Fetch Deal/Opportunity**: Gets data from CRM API (deal, company, contact)
 2. **Map Fields**: Converts CRM fields to Partner Central opportunity format
 3. **Create Opportunity**: Calls Partner Central Selling API to create the ACE opportunity
+
+### Process Call Flow (Demo UI)
+Turns raw call notes into a co-sell opportunity, agent-first:
+1. **Extract Fields**: Claude (via Strands/Bedrock) pulls structured opportunity fields from the notes
+2. **Create CRM Deal**: Creates a HubSpot deal + contact via API (the one step the PC Agent can't do)
+3. **Agent Creates Opportunity**: The Partner Central Agent creates the ACE opportunity directly from the notes (create-only). A unique customer-name suffix is added per run to avoid AWS duplicate-opportunity rejection on repeat demos
+4. **Optional Co-Sell Submit**: The agent submits that exact opportunity for co-sell; if the agent submit isn't reflected, it falls back to the Selling API `StartEngagementFromOpportunityTask`
+5. **Verify**: Polls the opportunity's `ReviewStatus` until it leaves "Pending Submission"
+
+> Gated by `process_call_enabled` / `PROCESS_CALL_ENABLED` (off by default) since it creates real records.
 
 ### Bi-directional Sync (ACE → CRM)
 1. **Fetch PC Status**: Gets opportunity review status and stage from Partner Central
