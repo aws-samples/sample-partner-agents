@@ -135,6 +135,40 @@ class PartnerCentralMCPClient:
             logger.error(f'Error listing opportunities: {e}')
             return []
 
+    def submit_opportunity(self, opportunity_id: str, involvement_type: str = "Co-Sell",
+                           visibility: str = "Full") -> Dict:
+        """Submit an opportunity to AWS for review (activates the co-sell motion)
+        via the Selling API StartEngagementFromOpportunityTask.
+
+        StartEngagement returns HTTP 200 with a *task*, whose TaskStatus may be
+        FAILED (e.g., duplicate opportunity, missing required fields). We treat
+        only a non-FAILED task as success and surface the failure message.
+        """
+        import uuid
+        try:
+            response = self.pc_client.start_engagement_from_opportunity_task(
+                Catalog=self.config.get('catalog', 'AWS'),
+                Identifier=opportunity_id,
+                ClientToken=str(uuid.uuid4()),
+                AwsSubmission={
+                    "InvolvementType": involvement_type,
+                    "Visibility": visibility,
+                },
+            )
+            task_status = response.get("TaskStatus", "")
+            if task_status == "FAILED":
+                message = response.get("Message", "Submission task failed")
+                reason = response.get("ReasonCode", "")
+                logger.warning(f"Submit task FAILED for {opportunity_id}: {reason} {message}")
+                return {"success": False, "task_status": "FAILED",
+                        "reason_code": reason, "error": message, "response": response}
+            logger.info(f"Submitted opportunity {opportunity_id} to AWS "
+                        f"(TaskStatus={task_status or 'accepted'})")
+            return {"success": True, "task_status": task_status, "response": response}
+        except Exception as e:
+            logger.error(f"Error submitting opportunity {opportunity_id} to AWS: {e}")
+            return {"success": False, "error": str(e)}
+
     def get_aws_opportunity_summary(self, opportunity_id: str) -> Dict:
         """Fetch the AWS-side summary of an opportunity (returns Origin, InvolvementType, etc.)."""
         try:
@@ -597,6 +631,80 @@ class PartnerCentralMCPClient:
             'answer': self._extract_answer(inner),
             'session_id': session_id,
             'status': inner.get('status', ''),
+        }
+
+    def run_agent_autopilot(self, text: str, session_id: str = None, max_rounds: int = 10) -> Dict:
+        """Drive the Partner Central Agent to completion, auto-approving every
+        tool it asks to run (create, submit, etc.).
+
+        Unlike send_message (one approval round), this loops until the agent
+        reaches a terminal state or max_rounds is hit, so the agent can chain
+        multiple tools. Pass session_id to continue an existing conversation
+        (used to create-then-submit in the same session). Returns:
+            {opportunity_ids, opportunity_id, answer, session_id, rounds, status, transcript}
+        opportunity_ids is every distinct O-id seen; opportunity_id is the first.
+        """
+        import re as _re
+
+        transcript = []
+        seen_tool_use_ids = set()
+
+        def _collect(envelope_inner):
+            try:
+                transcript.append(json.dumps(envelope_inner, default=str))
+            except Exception:
+                pass
+
+        result = self._signed_post(self._build_send_payload(text, session_id))
+        inner = self._parse_envelope(result)
+        session_id = inner.get('sessionId', session_id)
+        _collect(inner)
+
+        rounds = 0
+        while inner.get('status') == 'requires_approval' and rounds < max_rounds:
+            rounds += 1
+            # The server tracks ONE pending approval — use the LAST request.
+            approvals = [it for it in inner.get('content', [])
+                         if it.get('type') == 'tool_approval_request']
+            if not approvals:
+                break
+            tool_content = approvals[-1].get('content', {})
+            try:
+                approval_data = json.loads(tool_content.get('text', '{}'))
+                tool_use_id = approval_data.get('tool_use_id')
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                tool_use_id = tool_content.get('toolUseId')
+            if not tool_use_id or tool_use_id in seen_tool_use_ids:
+                # No new approval to act on — stop to avoid loops / re-runs.
+                break
+            seen_tool_use_ids.add(tool_use_id)
+            result = self._signed_post(
+                self._build_approval_payload(tool_use_id, 'approve', session_id)
+            )
+            inner = self._parse_envelope(result)
+            session_id = inner.get('sessionId', session_id)
+            _collect(inner)
+
+        answer = self._extract_answer(inner)
+        blob = "\n".join(transcript)
+        # Opportunity IDs look like O followed by digits. The agent sometimes
+        # also *mentions* an existing opportunity from the account; the one it
+        # just CREATED is the newest, i.e. the highest sequential number. Pick
+        # that one (robust against stale references in the transcript).
+        ordered_ids = []
+        for oid in _re.findall(r'\bO\d{5,}\b', blob):
+            if oid not in ordered_ids:
+                ordered_ids.append(oid)
+        created_id = max(ordered_ids, key=lambda o: int(o[1:])) if ordered_ids else None
+
+        return {
+            "opportunity_ids": ordered_ids,
+            "opportunity_id": created_id,
+            "answer": answer,
+            "session_id": session_id,
+            "rounds": rounds,
+            "status": inner.get('status', ''),
+            "transcript": transcript,
         }
 
     def update_next_steps(

@@ -325,6 +325,60 @@ curl -s -X POST http://localhost:8001/api/generate \
 
 ---
 
+## Test 8: Process Call (Demo UI, end-to-end)
+
+Tests the **Process Call** flow: call notes → HubSpot deal → ACE opportunity (→ optional co-sell submit). This is a Demo UI endpoint (port 8002) and creates **real** records, so it must be explicitly enabled.
+
+```bash
+# Enable the feature and provide a HubSpot token, then start the Demo UI
+export PROCESS_CALL_ENABLED=true
+export HUBSPOT_BEARER_TOKEN="pat-na2-xxxxx"
+python demo_ui.py   # serves on http://localhost:8002
+
+# Create-only (do not submit to AWS)
+curl -s -X POST http://localhost:8002/api/process-call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "notes": "Met with MedFirst Health. They want to migrate their patient portal to AWS by Q3, budget ~$300k/yr. Primary contact: Dana Lee, VP Eng, dana@medfirst.example.",
+    "submit_to_aws": false
+  }' | python -m json.tool
+
+# Or with a notes file (multipart) and co-sell submit
+curl -s -X POST http://localhost:8002/api/process-call \
+  -F "notes=" \
+  -F "files=@sample_meeting_notes/meeting_notes_medfirst_health.txt" \
+  -F "submit_to_aws=true" | python -m json.tool
+```
+
+### Expected Output
+
+```json
+{
+    "success": true,
+    "steps": { "extract": "ok", "hubspot": "ok", "ace": "ok", "submit": null },
+    "fields": { "company_name": "MedFirst Health", "amount": "300000", "...": "..." },
+    "deal_id": "12345678901",
+    "deal_url": "https://app.hubspot.com/contacts/xx/deal/12345678901",
+    "ace_opportunity_id": "O13272431",
+    "submitted": false,
+    "submit_error": null,
+    "agent_answer": "I've created opportunity O13272431 ...",
+    "error": null
+}
+```
+
+With `submit_to_aws=true`, `steps.submit` becomes `"ok"` and `submitted` becomes `true` once the opportunity's `ReviewStatus` leaves "Pending Submission".
+
+### Expected Output (feature disabled)
+
+```json
+{ "error": "Process Call is disabled. Set process_call_enabled=true in config.json to enable it." }
+```
+
+Returned with HTTP `403` when neither `PROCESS_CALL_ENABLED=true` nor `config.json` `process_call_enabled: true` is set.
+
+---
+
 ## Test Summary Checklist
 
 | Test | Description | Command | Expected Result |
@@ -336,6 +390,7 @@ curl -s -X POST http://localhost:8001/api/generate \
 | 5 | GET Opportunity | `curl .../api/opportunity/ID` | Returns opportunity JSON |
 | 6 | POST with Files | `curl -F files=@file ...` | Returns generated next steps |
 | 7 | POST without Context | `curl -d '{}' ...` | Returns error message |
+| 8 | Process Call (Demo UI) | `curl -X POST .../api/process-call -d '{"notes":"..."}'` | Deal + ACE opportunity created; `403` if disabled |
 
 ---
 

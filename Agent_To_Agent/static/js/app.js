@@ -1839,3 +1839,127 @@ async function sendCreateNotesApproval(decision) {
         addCreateNotesMessage('assistant', `❌ Error: ${error.message}`);
     }
 }
+
+
+// --------------------------------------------------------------------
+// Process Call — end-to-end demo: transcript -> HubSpot deal -> ACE
+// opportunity -> optional co-sell submit. The tab is only rendered when
+// the server has process_call_enabled = true.
+// --------------------------------------------------------------------
+async function processCall() {
+    const token = (document.getElementById('crm-token')?.value || '').trim();
+    const notes = (document.getElementById('process-call-notes')?.value || '').trim();
+    const fileInput = document.getElementById('process-call-file');
+    const file = fileInput && fileInput.files.length ? fileInput.files[0] : null;
+    const submitToAws = document.getElementById('process-call-submit-to-aws')?.checked;
+    const resultEl = document.getElementById('process-call-result');
+    const btn = document.getElementById('process-call-btn');
+
+    if (!token) { resultEl.innerHTML = stepError('No HubSpot token found. Go to the 📊 CRM → ACE tab, enter your HubSpot token, and click Load HubSpot Deals to confirm it works — then come back here.'); return; }
+    if (!notes && !file) { resultEl.innerHTML = stepError('Paste call notes or upload a file.'); return; }
+
+    // Validate the HubSpot token first, before prompting or creating anything.
+    btn.disabled = true;
+    resultEl.innerHTML = '<div class="loading" style="display:block;"><div class="spinner"></div><p>Checking HubSpot token...</p></div>';
+    try {
+        const vResp = await fetch('/api/hubspot/validate-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token }),
+        });
+        const vData = await vResp.json();
+        if (!vData.valid) {
+            resultEl.innerHTML = stepError(`${vData.error} Re-check the token on the 📊 CRM → ACE tab (Load HubSpot Deals should succeed).`);
+            btn.disabled = false;
+            return;
+        }
+    } catch (e) {
+        resultEl.innerHTML = stepError(`Could not validate the HubSpot token: ${e.message}`);
+        btn.disabled = false;
+        return;
+    }
+    resultEl.innerHTML = '';
+    btn.disabled = false;
+
+    // Guard the writes behind an explicit confirmation — this creates a REAL
+    // deal in HubSpot and a REAL opportunity in ACE.
+    const confirmMsg = submitToAws
+        ? 'This will create a REAL deal in HubSpot, register an opportunity in ACE, and submit it to AWS for co-sell review. Continue?'
+        : 'This will create a REAL deal in HubSpot and register an opportunity in ACE. Continue?';
+    if (!confirm(confirmMsg)) {
+        resultEl.innerHTML = '<div style="color:#888; font-size:13px; padding:8px 0;">Cancelled — nothing was created.</div>';
+        return;
+    }
+
+    btn.disabled = true;
+    resultEl.innerHTML = '<div class="loading" style="display:block;"><div class="spinner"></div><p>Processing the call — extracting fields, creating the HubSpot deal, registering in ACE...</p></div>';
+
+    try {
+        let resp;
+        if (file) {
+            const fd = new FormData();
+            fd.append('notes', notes);
+            fd.append('hubspot_token', token);
+            fd.append('submit_to_aws', submitToAws ? 'true' : 'false');
+            fd.append('files', file);
+            resp = await fetch('/api/process-call', { method: 'POST', body: fd });
+        } else {
+            resp = await fetch('/api/process-call', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ notes, hubspot_token: token, submit_to_aws: submitToAws }),
+            });
+        }
+        const data = await resp.json();
+
+        if (!data.success) {
+            resultEl.innerHTML = renderProcessSteps(data) + stepError(data.error || 'Process call failed.');
+            return;
+        }
+
+        const aceId = data.ace_opportunity_id;
+        // Auto-fill the other tabs with the new opportunity ID.
+        ['opp-id', 'chat-opp-id'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el && aceId) el.value = aceId;
+        });
+
+        const dealLink = data.deal_url
+            ? `<a href="${data.deal_url}" target="_blank" rel="noopener" style="color:#00d4ff;">${data.deal_id}</a>`
+            : (data.deal_id || '');
+        let html = renderProcessSteps(data);
+        html += `<div style="background: rgba(0,255,136,0.08); border:1px solid rgba(0,255,136,0.4); border-radius:8px; padding:14px; margin-top:10px;">`;
+        html += `<p style="margin:0 0 8px;"><strong>🎉 Call processed end to end.</strong></p>`;
+        html += `<p style="margin:4px 0; font-size:13px;">HubSpot deal: ${dealLink}</p>`;
+        html += `<p style="margin:4px 0; font-size:13px;">ACE opportunity: <strong>${aceId || '—'}</strong>${data.submitted ? ' · submitted to AWS for co-sell ✅' : ''}</p>`;
+        html += `<p style="margin:10px 0 0; font-size:13px; color:#ccc;">Next: open <strong>💬 Ask Questions</strong> (the opportunity ID is pre-filled) and ask for competitive positioning vs. the competitor and a follow-up email.</p>`;
+        html += `</div>`;
+        resultEl.innerHTML = html;
+    } catch (error) {
+        resultEl.innerHTML = stepError(error.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderProcessSteps(data) {
+    const steps = data.steps || {};
+    const row = (label, state) => {
+        const icon = state === 'ok' ? '✅' : (state === 'error' ? '❌' : '⏳');
+        const color = state === 'ok' ? '#00ff88' : (state === 'error' ? '#ff6b6b' : '#888');
+        return `<div style="padding:4px 0; color:${color}; font-size:13px;">${icon} ${label}</div>`;
+    };
+    let html = '<div style="background: rgba(255,255,255,0.04); border-radius:8px; padding:12px; margin-bottom:10px;">';
+    html += row('Extract deal fields from the call', steps.extract);
+    html += row('Create deal in HubSpot', steps.hubspot);
+    html += row('Register opportunity in ACE', steps.ace);
+    if (steps.submit !== null && steps.submit !== undefined) {
+        html += row('Submit to AWS for co-sell review', steps.submit);
+    }
+    html += '</div>';
+    return html;
+}
+
+function stepError(msg) {
+    return `<div style="background: rgba(255,107,107,0.1); border:1px solid rgba(255,107,107,0.5); border-radius:8px; padding:12px; color:#ff9b9b; font-size:13px;">❌ ${msg}</div>`;
+}

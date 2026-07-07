@@ -124,6 +124,65 @@ class NextStepsGenerator:
             raise last_error
         raise RuntimeError("No Bedrock model candidates available")
 
+    # ACE-safe enum hints for extraction. These match the Partner Central
+    # CreateOpportunity `customer.account.industry` enum exactly.
+    _EXTRACT_INDUSTRIES = (
+        "Healthcare", "Life Sciences", "Financial Services", "Software and Internet",
+        "Retail", "Manufacturing", "Telecommunications", "Government", "Education",
+        "Media and Entertainment", "Energy - Power and Utilities", "Energy - Oil and Gas",
+        "Automotive", "Transportation and Logistics", "Professional Services",
+        "Consumer Goods", "Travel", "Hospitality", "Gaming", "Other",
+    )
+
+    def extract_call_fields(self, notes: str) -> Dict:
+        """Extract structured opportunity fields from raw call notes as a dict.
+
+        Used by the "Process Call" flow to populate a CRM deal + ACE opportunity
+        from a meeting transcript. Returns a flat dict of best-effort values;
+        the CRM mapper fills any gaps with safe defaults, so missing keys are OK.
+        """
+        import json
+        industries = ", ".join(f'"{i}"' for i in self._EXTRACT_INDUSTRIES)
+        prompt = f"""Extract opportunity fields from the call notes below and return ONLY a single JSON object (no prose, no code fences).
+
+Use these exact keys (use empty string "" if unknown):
+- company_name, website, industry, country_code, state, city, postal_code, street
+- contact_first_name, contact_last_name, contact_email, contact_phone, contact_title
+- project_title          (a short opportunity title)
+- amount                 (number only, no currency symbol or commas; the expected/total spend)
+- close_date             (YYYY-MM-DD)
+- business_problem       (1-2 sentences)
+- use_case               (AWS-style use case, e.g. "AI Machine Learning and Analytics")
+- solution_description   (1 sentence)
+- competitor             (competing vendor, if any)
+- delivery_model         (e.g. "SaaS or PaaS")
+- opportunity_type       ("Net New Business" or "Expansion")
+- primary_need           (e.g. "Co-Sell - Architectural Validation")
+
+For "industry", choose the closest match from: {industries}.
+
+## Call Notes:
+{notes}
+
+## JSON:"""
+        raw = self._invoke(prompt)
+        # Strip code fences / surrounding prose and isolate the JSON object.
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lstrip().lower().startswith("json"):
+                text = text.lstrip()[4:]
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return {k: (v if v is not None else "") for k, v in data.items()}
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Could not parse extracted fields as JSON: {e}; raw={raw[:200]}")
+        return {}
+
     def _build_prompt(self, context_sources: List[ContextSource], prompt: str,
                       opportunity_data: Dict = None) -> str:
         """Assemble the user message (context + opportunity + instructions)."""

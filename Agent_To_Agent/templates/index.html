@@ -32,6 +32,9 @@
             <button class="tab" onclick="showTab('update')">✏️ Update Next Steps</button>
             <button class="tab" onclick="showTab('create-notes')">📝 Create from Notes</button>
             <button class="tab" onclick="showTab('chat')">💬 Ask Questions</button>
+            {% if process_call_enabled %}
+            <button class="tab" onclick="showTab('process-call')">⚡ Process Call</button>
+            {% endif %}
         </div>
         
         <!-- CRM Panel -->
@@ -326,6 +329,52 @@
                 </div>
             </div>
         </div>
+
+        {% if process_call_enabled %}
+        <!-- Process Call Panel (hidden unless process_call_enabled) -->
+        <div id="process-call-panel" class="panel">
+            <div class="form-group">
+                <h2 style="margin-top:0;">⚡ Process Call — End to End</h2>
+                <p style="color:#aaa; font-size:14px;">
+                    Paste a call transcript (or upload one). The agent extracts the deal,
+                    <strong>creates it in HubSpot</strong>, registers the opportunity in
+                    <strong>ACE</strong>, and (optionally) submits it to AWS for
+                    <strong>co-sell</strong> — then use the <em>Ask Questions</em> tab for
+                    competitive positioning and a follow-up email.
+                </p>
+            </div>
+
+            <div style="background: rgba(255,170,0,0.12); border: 1px solid rgba(255,170,0,0.5); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                ⚠️ <strong>This creates a real deal in your connected HubSpot portal.</strong>
+                Use a test portal. The token is taken from the <strong>📊 CRM → ACE</strong> tab
+                and is automatically checked when you click Process Call (needs deal + contact
+                read/write scopes). Each run names the deal with a timestamp so you can spot the
+                new one at the top of the deal list.
+            </div>
+
+            <div class="form-group">
+                <label>Call Notes / Transcript</label>
+                <textarea id="process-call-notes" rows="10"
+                          placeholder="Paste the call transcript or meeting notes here..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label>...or upload a notes file</label>
+                <input type="file" id="process-call-file" accept=".txt,.md,.json,.csv">
+            </div>
+
+            <div class="form-group">
+                <label style="display:flex; align-items:center; cursor:pointer; font-size:13px;">
+                    <input type="checkbox" id="process-call-submit-to-aws" style="width:auto; margin-right:8px;" checked>
+                    Submit to AWS for review after creation (activate co-sell)
+                </label>
+            </div>
+
+            <button class="btn btn-primary" id="process-call-btn" onclick="processCall()">⚡ Process Call</button>
+
+            <div id="process-call-result" style="margin-top:18px;"></div>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Record Details Modal -->
