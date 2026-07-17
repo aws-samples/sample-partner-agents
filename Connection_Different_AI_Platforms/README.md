@@ -2,6 +2,9 @@
 
 A step-by-step guide to configuring the AWS MCP and Partner Central Agents MCP servers across six clients: Amazon Quick Desktop, Claude Cowork, Cursor, Kiro, OpenAI Codex, and GitHub Copilot.
 
+
+You can copy the contents from the setup-mcp.md file and provide that to your AI coding assistants / agentic development tools to help you get started.
+
 ---
 
 ## 1. Introduction & Shared Prerequisites
