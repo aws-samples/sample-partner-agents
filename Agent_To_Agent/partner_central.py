@@ -713,6 +713,7 @@ class PartnerCentralMCPClient:
         next_steps: str,
         interactive: bool = True,
         auto_approve: bool = False,
+        defer_approval: bool = False,
     ) -> Dict:
         """Update opportunity's NextSteps field via the Partner Central agent.
 
@@ -723,6 +724,16 @@ class PartnerCentralMCPClient:
             auto_approve: when True, automatically approves the update
                 without prompting. Use for non-interactive callers (REST
                 API, scheduled jobs). Has no effect if `interactive` is True.
+            defer_approval: when True, return the `requires_approval` response
+                to the caller WITHOUT deciding, so a UI can present the
+                approval to a human and complete it later via
+                `_build_approval_payload`. Takes precedence over both
+                `interactive` and `auto_approve`.
+
+                Required by web callers: without it, `interactive=False` plus
+                the default `auto_approve=False` silently resolves to
+                'reject', so the write never happens while the caller sees a
+                'complete' status. See demo_ui.py `/api/submit-next-steps`.
         """
         if len(next_steps) > 255:
             next_steps = next_steps[:252] + '...'
@@ -748,6 +759,17 @@ class PartnerCentralMCPClient:
                 return result
 
             session_id = inner.get('sessionId', '')
+
+            # Hand the pending approval back to the caller untouched. A UI needs
+            # this so a human can decide; deciding here would defeat the
+            # human-in-the-loop guardrail.
+            if defer_approval:
+                logger.info(
+                    f"Deferring approval for tool {tool_name} "
+                    f"(tool_use_id={tool_use_id}, session_id={session_id})"
+                )
+                return result
+
             if interactive:
                 decision = self._prompt_for_decision(tool_name, session_id, tool_input)
             else:
@@ -818,10 +840,14 @@ class PartnerCentralMCPClient:
                 print("="*60)
                 print(f"Error: {update_error}")
                 print("="*60)
+            # NOTE: a rejection also returns status == 'complete' — the
+            # conversation turn completed, the write did not. So the decision
+            # must be tested BEFORE the status, or a reject is reported as a
+            # successful update.
+            elif decision == 'reject':
+                print("\n❌ Update rejected — NextSteps was NOT changed.")
             elif final_status == 'complete':
                 print("\n✅ Update approved and completed!")
-            elif decision == 'reject':
-                print("\n❌ Update rejected by user.")
         except Exception as parse_err:
             logger.warning(f"Could not parse final status: {parse_err}")
 
