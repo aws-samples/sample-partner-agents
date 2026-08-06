@@ -65,6 +65,20 @@ class HubSpotClient:
         """Get contact details from HubSpot"""
         endpoint = f"/crm/v3/objects/contacts/{contact_id}"
         return self._make_request("GET", endpoint)
+
+    def get_company(self, company_id: str) -> Dict:
+        """Get company details from HubSpot.
+
+        Used to populate CompanyName / WebsiteUrl / Industry on the ACE
+        opportunity from real CRM data. Without this the mapper falls back to
+        a hardcoded placeholder company name and DEFAULT_* address values.
+
+        Requires the crm.objects.companies.read scope. A 403 here is
+        non-fatal: the caller degrades to the previous placeholder behaviour.
+        """
+        endpoint = f"/crm/v3/objects/companies/{company_id}"
+        params = {'properties': 'name,domain,website,industry,city,state,zip,country,phone'}
+        return self._make_request("GET", endpoint, params=params)
     
     def _get_stage_label(self, stage_id: str) -> str:
         """Resolve a HubSpot deal stage ID to its human-readable label.
@@ -95,7 +109,9 @@ class HubSpotClient:
         endpoint = f"/crm/v3/objects/deals/{deal_id}"
         params = {
             'archived': 'false',
-            'associations': 'contacts',
+            # 'companies' is required: without it company_name is never
+            # populated and the mapper falls back to a placeholder name.
+            'associations': 'contacts,companies',
             'properties': 'dealname,amount,dealstage,closedate,description,website,industry,hs_next_step,partner_central_opportunity_id,partner_central_sync_status,ace_stage,ace_validation_status'
         }
         
@@ -138,19 +154,60 @@ class HubSpotClient:
             contact_email = contact_props.get("email", "")
             contact_phone = contact_props.get("phone", "")
             contact_title = contact_props.get("jobtitle", "")
-        
+
+        # Resolve the associated company so the ACE opportunity carries the real
+        # customer name, website and industry instead of placeholders.
+        # Degrades quietly: no association, or a 403 from a token lacking
+        # crm.objects.companies.read, simply leaves these empty and the mapper
+        # falls back as before.
+        company_name = ""
+        company_props = {}
+        company_associations = associations.get("companies", {}).get("results", [])
+        if company_associations:
+            company_id = company_associations[0].get("id")
+            try:
+                company_data = self.get_company(company_id)
+                if "error" not in company_data:
+                    company_props = company_data.get("properties", {}) or {}
+                    company_name = (company_props.get("name") or "").strip()
+                    logger.info(f"Resolved HubSpot company {company_id}: {company_name!r}")
+                else:
+                    logger.warning(
+                        f"Could not fetch company {company_id} "
+                        f"({company_data.get('error')}); falling back to deal name"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to fetch company {company_id}: {e}")
+        else:
+            logger.info(
+                f"Deal {deal_id} has no associated company; "
+                f"CompanyName will fall back to the deal name"
+            )
+
+        # Prefer company-level website/industry, but never clobber a value that
+        # was already set on the deal itself.
+        merged_properties = dict(properties)
+        for deal_key, company_key in (("website", "website"), ("industry", "industry")):
+            if not merged_properties.get(deal_key) and company_props.get(company_key):
+                merged_properties[deal_key] = company_props[company_key]
+        if not merged_properties.get("website") and company_props.get("domain"):
+            merged_properties["website"] = company_props["domain"]
+
         return HubSpotDeal(
             deal_id=deal_id,
             deal_name=properties.get("dealname", "Untitled Deal"),
             amount=float(properties.get("amount", 0) or 0),
             stage=self._get_stage_label(properties.get("dealstage", "unknown")),
             close_date=properties.get("closedate", ""),
-            company_name="",  # Will be set from contact's company or deal name
+            # Real company name when one is associated; empty otherwise, in
+            # which case the mapper falls back to the deal name.
+            company_name=company_name,
             contact_name=contact_name,
             contact_email=contact_email,
             description=properties.get("description", ""),
             properties={
-                **properties,
+                **merged_properties,
+                "company_properties": company_props,
                 "all_contacts": all_contacts,
                 "contact_first_name": contact_first_name,
                 "contact_last_name": contact_last_name,

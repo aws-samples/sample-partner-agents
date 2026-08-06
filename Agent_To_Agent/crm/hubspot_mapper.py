@@ -22,6 +22,7 @@ Deal ID                    -> PartnerOpportunityIdentifier (prefixed with HS-)
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from dataclasses import dataclass, field
@@ -455,10 +456,38 @@ class HubSpotToPartnerCentralMapper:
         
         Partner Central requires unique company names. This generates one
         using a timestamp. Customize as needed for your use case.
+
+        Preference order:
+          1. the associated HubSpot company's name
+          2. the deal name, cleaned of bracketed prefixes like "[TEST] "
+          3. a generic literal, only if the deal somehow has no name at all
+
+        Falling back to a hardcoded literal here loses the customer identity
+        entirely, which makes the created ACE opportunity unrecognisable.
         """
         if deal.company_name:
             return f"{deal.company_name}-{timestamp}"
-        return f"ValidAWSCreate-{timestamp}"
+
+        # Derive something meaningful from the deal name. Strips a leading
+        # "[TEST] " style tag and any " — Customer" / " - Customer" suffix so
+        # "[TEST] Discovery — Acme Manufacturing" yields "Acme Manufacturing".
+        deal_name = (deal.deal_name or "").strip()
+        if deal_name:
+            cleaned = re.sub(r'^\s*\[[^\]]*\]\s*', '', deal_name)
+            for sep in ('—', '–', ' - '):
+                if sep in cleaned:
+                    cleaned = cleaned.split(sep)[-1]
+                    break
+            cleaned = cleaned.strip(' -–—')
+            if cleaned:
+                return f"{cleaned}-{timestamp}"
+            return f"{deal_name}-{timestamp}"
+
+        logger.warning(
+            f"Deal {deal.deal_id} has neither an associated company nor a deal "
+            f"name; using a generic placeholder company name"
+        )
+        return f"UnknownCustomer-{timestamp}"
     
     def _generate_partner_opportunity_id(self, deal: HubSpotDeal, timestamp: int) -> str:
         """
