@@ -633,6 +633,54 @@ def update_next_steps():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def verify_write_happened(inner):
+    """Did the agent actually perform the write, or just finish the turn?
+
+    A rejected tool call still returns status == 'complete' — the conversation
+    turn completed, the write did not. So `status` alone must never be treated
+    as proof of a successful write. This inspects the serverToolResult payload
+    for evidence that UpdateOpportunity was attempted and returned 2xx.
+
+    Returns (verified: bool|None, detail: str)
+        True  -> a write was attempted and succeeded
+        False -> the agent explicitly rejected or the write failed
+        None  -> no tool result present; caller cannot confirm either way
+    """
+    for item in (inner or {}).get('content', []):
+        if item.get('type') != 'serverToolResult':
+            continue
+        output = item.get('content', {}).get('output', '')
+        if not isinstance(output, str):
+            continue
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, TypeError):
+            if 'reject' in output.lower():
+                return False, 'tool output reports a rejection'
+            continue
+        for op in ('UpdateOpportunity', 'CreateOpportunity'):
+            block = data.get(op)
+            if not isinstance(block, dict):
+                continue
+            if not block.get('attempted'):
+                return False, f'{op} was not attempted (rejected or skipped)'
+            resp = block.get('response', {}) or {}
+            code = (resp.get('ResponseMetadata') or {}).get('HTTPStatusCode')
+            if code and 200 <= int(code) < 300:
+                return True, f'{op} returned HTTP {code}'
+            if 'error' in resp:
+                return False, f'{op} error: {resp["error"]}'
+            return True, f'{op} attempted, no status code returned'
+
+    # Fall back to the agent's own narrative — it states rejections plainly.
+    for item in (inner or {}).get('content', []):
+        if item.get('type') == 'ASSISTANT_RESPONSE':
+            text = (item.get('content', {}) or {}).get('text', '').lower()
+            if 'was rejected' in text or 'has not been changed' in text:
+                return False, 'agent narrative reports the update was rejected'
+    return None, 'no tool result found; write could not be confirmed'
+
+
 @app.route('/api/submit-next-steps', methods=['POST'])
 def submit_next_steps():
     """Submit edited next steps to Partner Central via MCP"""
@@ -656,11 +704,17 @@ def submit_next_steps():
         logger.info(f"Submitting next steps for opportunity {opportunity_id}")
         logger.info(f"Using catalog: {agent.mcp_client.config.get('catalog', 'NOT SET')}")
         
-        # Call MCP to update (non-interactive mode to get approval request)
+        # Call MCP to update, deferring the approval decision to the browser.
+        #
+        # defer_approval=True is REQUIRED here. Without it, interactive=False
+        # combined with the default auto_approve=False makes the library
+        # silently send a 'reject', so NextSteps is never written while this
+        # handler still sees status == 'complete' and reports success.
         mcp_response = agent.mcp_client.update_next_steps(
-            opportunity_id, 
-            next_steps, 
-            interactive=False
+            opportunity_id,
+            next_steps,
+            interactive=False,
+            defer_approval=True
         )
         
         logger.info(f"MCP submit response: {json.dumps(mcp_response, indent=2)}")
@@ -701,8 +755,16 @@ def submit_next_steps():
                         "tool_name": tool_name
                     })
                 elif status == 'complete':
-                    logger.info("MCP update completed without approval")
-                    return jsonify({"success": True})
+                    # 'complete' means the turn finished, NOT that the write
+                    # succeeded. Verify before telling the browser it worked.
+                    verified, detail = verify_write_happened(inner)
+                    logger.info(f"MCP status complete; write verified={verified} ({detail})")
+                    if verified is False:
+                        return jsonify({
+                            "success": False,
+                            "error": f"Partner Central was not updated: {detail}"
+                        })
+                    return jsonify({"success": True, "detail": detail})
         except Exception as parse_err:
             logger.warning(f"Could not parse MCP response: {parse_err}")
         
@@ -853,9 +915,34 @@ def send_approval():
                     })
                 
                 if status == 'complete':
+                    # A rejection ALSO returns status == 'complete'. We know the
+                    # decision here, so decide from that rather than inferring
+                    # from the payload — the reject response carries no tool
+                    # result to inspect.
+                    if decision != 'approve':
+                        logger.info(f"Decision was '{decision}' — no write performed")
+                        return jsonify({
+                            "success": False,
+                            "rejected": True,
+                            "message": agent_text or (
+                                "Update rejected. Partner Central was not changed."
+                            ),
+                        })
+
+                    # 'complete' only means the turn finished. Confirm the write.
+                    verified, detail = verify_write_happened(inner)
+                    logger.info(f"Approval turn complete; write verified={verified} ({detail})")
+                    if verified is False:
+                        return jsonify({
+                            "success": False,
+                            "error": f"Partner Central was not updated: {detail}",
+                            "message": agent_text or detail,
+                        })
                     return jsonify({
                         "success": True,
+                        "unconfirmed": verified is None,
                         "message": agent_text or "Request completed.",
+                        "detail": detail,
                     })
                 
                 if status in ('error', 'failed'):
@@ -875,9 +962,21 @@ def send_approval():
         if 'error' in result:
             return jsonify({"success": False, "error": result.get('error')})
         
-        # Default: assume success if decision was approve and no error
-        logger.info("Assuming success based on approve decision")
-        return jsonify({"success": decision == 'approve', "response": result})
+        # Unparseable response. Do NOT claim success merely because the user
+        # clicked approve — that is how a silent rejection gets reported as a
+        # completed update. Surface the uncertainty instead.
+        logger.warning(
+            "Could not confirm the write from the MCP response; "
+            "reporting indeterminate rather than assuming success"
+        )
+        return jsonify({
+            "success": False,
+            "error": (
+                "Could not confirm whether Partner Central was updated. "
+                "Verify the opportunity before retrying."
+            ),
+            "response": result,
+        })
         
     except Exception as e:
         logger.error(f"Error sending approval: {e}")
