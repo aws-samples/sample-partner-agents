@@ -171,7 +171,7 @@ class HubSpotToPartnerCentralMapper:
         }
     
     def _format_phone_number(self, phone: str) -> str:
-        """
+        r"""
         Format phone number to E.164 format required by Partner Central.
         
         Partner Central requires: +[1-9]\d{1,14} (e.g., +15551234567)
