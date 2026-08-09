@@ -12,6 +12,7 @@ import os
 import re
 import json
 import logging
+import threading
 import boto3
 import requests
 from pathlib import Path
@@ -140,6 +141,18 @@ crm_to_ace_mapping = {}
 # Format: { session_id: bool }  -- True means the agent is allowed to submit.
 session_allow_submit = {}
 
+# Idempotency guard for approval submissions. The Flask dev server is
+# threaded, so a double-submit of the same approval (double-click, retry,
+# or two overlapping requests) can otherwise execute the SAME pending
+# create twice and produce duplicate opportunities. We dedup on
+# (session_id, tool_use_id): a key is added to _approvals_inflight while an
+# approval is executing and moved to _approvals_done once it created an
+# opportunity. A second request for a key that is in-flight or done is
+# rejected without contacting the agent. All access is under _approval_lock.
+_approval_lock = threading.Lock()
+_approvals_inflight = set()  # keys currently executing
+_approvals_done = set()      # keys that already created an opportunity
+
 
 # Tool names that submit an opportunity to AWS for review. The agent uses
 # different names depending on the underlying API path — keep this list in
@@ -163,6 +176,21 @@ def _is_submit_tool(tool_name):
     if 'submission' in n and 'submit' not in n.replace('submission', ''):
         return False
     return any(p in n for p in SUBMIT_TOOL_PATTERNS)
+
+
+def _is_create_opportunity_tool(tool_name):
+    """Return True if the tool name represents creating an opportunity.
+
+    Used to block a *duplicate* create: the agent occasionally fires a second
+    CreateOpportunity after the first one already succeeded.
+    """
+    if not tool_name:
+        return False
+    n = tool_name.lower()
+    # Match both "CreateOpportunity" and the agent's actual tool name
+    # "opportunity_creator". Note: 'create' is NOT a substring of 'creator'
+    # ("creat" + "or"), so match on the shared 'creat' stem instead.
+    return 'creat' in n and 'opportunit' in n
 
 
 # HTML/CSS/JS now live in `templates/index.html`, `static/css/app.css`,
@@ -783,6 +811,10 @@ def send_approval():
         session_id = data.get('session_id')
         tool_use_id = data.get('tool_use_id')
         decision = data.get('decision')
+        # Optional, used to VERIFY the write actually landed (a rejected
+        # approval also returns status 'complete', so status alone is not proof).
+        opportunity_id = data.get('opportunity_id')
+        expected_next_steps = data.get('next_steps')
         
         logger.info(f"Sending approval: session_id={session_id}, tool_use_id={tool_use_id}, decision={decision}")
         
@@ -1846,6 +1878,10 @@ def create_from_notes():
 @app.route('/api/create-from-notes-approve', methods=['POST'])
 def create_from_notes_approve():
     """Send approval decision for create-from-notes flow."""
+    # Defined up front so the `finally` cleanup is safe even if an early
+    # exception fires before the idempotency key is acquired.
+    approval_key = None
+    acquired_key = False
     try:
         data = request.json
         session_id = data.get('session_id')
@@ -1858,6 +1894,42 @@ def create_from_notes_approve():
         
         if not session_id or not tool_use_id:
             return jsonify({"error": "session_id and tool_use_id required"}), 400
+        
+        # Idempotency guard (approve only): ensure a given pending approval is
+        # executed exactly once even if the browser submits it twice or two
+        # requests overlap on the threaded dev server. Reject-decisions are
+        # naturally idempotent and are not tracked.
+        approval_key = (session_id, tool_use_id)
+        acquired_key = False
+        if decision == 'approve':
+            with _approval_lock:
+                if approval_key in _approvals_done:
+                    logger.warning(
+                        f"Duplicate approval ignored (already created) for {approval_key}"
+                    )
+                    return jsonify({
+                        "answer": (
+                            "⚠️ This approval was already processed and the opportunity "
+                            "was created. Ignoring the duplicate request to avoid creating "
+                            "a second opportunity."
+                        ),
+                        "session_id": session_id,
+                        "duplicate": True,
+                    }), 200
+                if approval_key in _approvals_inflight:
+                    logger.warning(
+                        f"Duplicate approval ignored (in progress) for {approval_key}"
+                    )
+                    return jsonify({
+                        "answer": (
+                            "⏳ This approval is already being processed. Please wait — "
+                            "the opportunity is being created."
+                        ),
+                        "session_id": session_id,
+                        "duplicate": True,
+                    }), 200
+                _approvals_inflight.add(approval_key)
+                acquired_key = True
         
         agent = OrchestratorAgent()
         config = agent.mcp_client.config
@@ -2067,6 +2139,35 @@ def create_from_notes_approve():
                     "review_status": review_status or 'Pending Submission',
                     "stage": stage,
                 })
+
+            if _is_create_opportunity_tool(new_approval.get('tool_name')) and opportunity_id:
+                # DUPLICATE GUARD: an opportunity was already created in this
+                # turn. The agent occasionally fires a SECOND CreateOpportunity;
+                # auto-reject it so the CRM → opportunity flow can't create two.
+                # Only guards when opportunity_id is set — a follow-up create
+                # after a FAILED first attempt is a legitimate retry, so we let
+                # that one through to the user.
+                logger.warning(
+                    f"Auto-rejecting duplicate create tool "
+                    f"'{new_approval['tool_name']}' — opportunity {opportunity_id} "
+                    f"was already created in session {session_id}"
+                )
+                auto_approve_tool(
+                    mcp_endpoint, config, credentials, service_name,
+                    session_id, new_approval['tool_use_id'], decision='reject'
+                )
+                dup_note = (
+                    "\n\n⚠️ **Auto-blocked a duplicate**: the agent tried to create a "
+                    f"second opportunity, but one was already created (`{opportunity_id}`). "
+                    "The duplicate request was automatically rejected."
+                )
+                return jsonify({
+                    "answer": answer + dup_note,
+                    "session_id": session_id,
+                    "opportunity_id": opportunity_id,
+                    "review_status": review_status or 'Pending Submission',
+                    "stage": stage,
+                })
             
             # Otherwise, surface the approval to the user
             return jsonify({
@@ -2088,6 +2189,18 @@ def create_from_notes_approve():
     except Exception as e:
         logger.error(f"Error in create-from-notes-approve: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        # Release the in-flight lock. If an opportunity was created for this
+        # approval, promote the key to "done" so any later duplicate submit of
+        # the same tool_use_id is permanently rejected. If nothing was created
+        # (error / legitimate retry), just release so the user can retry.
+        # Gated on acquired_key, which is only True for an approve decision
+        # that successfully claimed the key.
+        if acquired_key:
+            with _approval_lock:
+                _approvals_inflight.discard(approval_key)
+                if 'opportunity_id' in locals() and opportunity_id:
+                    _approvals_done.add(approval_key)
 
 
 if __name__ == '__main__':

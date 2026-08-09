@@ -582,17 +582,34 @@ Turns raw call notes into a co-sell opportunity, agent-first:
 
 ## HubSpot → ACE Field Mapping
 
-| HubSpot Field | ACE Opportunity Field |
-|---------------|----------------------|
-| Deal Name | Project.Title |
-| Amount | Project.ExpectedCustomerSpend.Amount |
-| Close Date | LifeCycle.TargetCloseDate |
-| Contact First Name | Customer.Contacts[0].FirstName |
-| Contact Last Name | Customer.Contacts[0].LastName |
-| Contact Email | Customer.Contacts[0].Email |
-| Contact Phone | Customer.Contacts[0].Phone |
-| Contact Job Title | Customer.Contacts[0].BusinessTitle |
-| Deal ID | PartnerOpportunityIdentifier |
+> ⚠️ **Demo mapping only.** This sample maps a **limited subset** of HubSpot
+> deal fields to Partner Central to showcase the deal → opportunity flow. It is
+> **not** a complete or production-ready mapping. Any ACE field not sourced from
+> HubSpot below is filled with a **hardcoded demo default** (see the `DEFAULT_*`
+> attributes in `crm/hubspot_mapper.py`). Extend the mapper for real use.
+
+| HubSpot Field | ACE Opportunity Field | Notes |
+|---------------|-----------------------|-------|
+| Associated Company name | Customer.Account.CompanyName | Falls back to the **deal name** if the deal has no associated company, or if the token lacks `crm.objects.companies.read`. A uniqueness suffix is appended because Partner Central rejects duplicate customers. |
+| Deal Name | Project.Title | |
+| Amount | Project.ExpectedCustomerSpend.Amount | |
+| Close Date | LifeCycle.TargetCloseDate | |
+| Description | Project.CustomerBusinessProblem | Falls back to a stage-based default when empty |
+| Industry | Customer.Account.Industry | Demo default if absent |
+| Website | Customer.Account.WebsiteUrl | Demo default if absent |
+| Contact First Name | Customer.Contacts[0].FirstName | |
+| Contact Last Name | Customer.Contacts[0].LastName | |
+| Contact Email | Customer.Contacts[0].Email | |
+| Contact Phone | Customer.Contacts[0].Phone | Normalized to E.164 |
+| Contact Job Title | Customer.Contacts[0].BusinessTitle | |
+| Deal ID | PartnerOpportunityIdentifier | |
+
+Fields **not** sourced from HubSpot — address, use case, delivery model, sales
+activities, primary needs, opportunity type, marketing — use demo defaults in
+the mapper. For the company name to resolve to the real associated company, the
+HubSpot token needs `crm.objects.deals.read`, `crm.objects.contacts.read`, and
+`crm.objects.companies.read`; without the companies scope it degrades to the
+deal name.
 
 ### Customizing the Data Mapper
 

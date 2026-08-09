@@ -20,6 +20,27 @@ h1 {
     color: #888;
     margin-bottom: 30px;
 }
+.prod-warning {
+    background: rgba(255, 193, 7, 0.10);
+    border: 1px solid rgba(255, 193, 7, 0.45);
+    border-left: 4px solid #ffc107;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 0 0 26px;
+    color: #eadfc2;
+    font-size: 14px;
+    line-height: 1.55;
+}
+.prod-warning .prod-warning-title {
+    display: block;
+    color: #ffc107;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+.prod-warning p { margin: 8px 0; }
+.prod-warning ul { margin: 8px 0 0; padding-left: 20px; }
+.prod-warning li { margin: 5px 0; }
+.prod-warning strong { color: #ffd451; }
 .architecture {
     background: rgba(255,255,255,0.05);
     border-radius: 12px;
