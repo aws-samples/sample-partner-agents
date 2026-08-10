@@ -698,9 +698,9 @@ async function openCreateViaAgentModal() {
         // Partner Central before AWS review starts.
         const submitToAws = document.getElementById('create-agent-submit-to-aws')?.checked;
         if (submitToAws) {
-            prompt += `\n\nIMPORTANT: After creating the opportunity, submit it to AWS for review. Confirm with me before submission.`;
+            prompt += `\n\nIMPORTANT: Create exactly ONE opportunity — do not create more than one. After it is created, submit that same opportunity to AWS for review. Confirm with me before submission.`;
         } else {
-            prompt += `\n\nIMPORTANT: Create the opportunity only — do NOT submit it to AWS for review. Leave it in "Pending Submission" status so I can review it in Partner Central first. Stop after the opportunity is successfully created.`;
+            prompt += `\n\nIMPORTANT: Create exactly ONE opportunity — do not create more than one, and do NOT submit it to AWS for review. Leave it in "Pending Submission" status so I can review it in Partner Central first. Stop as soon as the opportunity is successfully created.`;
         }
         
         addCreateAgentMessage('user', `<em>Sending deal data to agent...</em><br><pre style="font-size: 11px; margin-top: 8px; white-space: pre-wrap;">${prompt}</pre>`);
@@ -913,6 +913,26 @@ async function sendCreateAgentReply() {
 async function sendCreateAgentApproval(decision) {
     if (!createAgentPendingApproval) return;
     
+    // Capture the pending approval and clear it immediately. A single
+    // approval must be submitted exactly once: without this, a double-click
+    // (or an impatient second click during the ~10s round-trip) fires two
+    // POST /api/create-from-notes-approve requests with the SAME tool_use_id,
+    // and the agent executes the pending create twice -> duplicate
+    // opportunities. Clearing before the fetch makes a second click
+    // short-circuit at the guard above.
+    const pending = createAgentPendingApproval;
+    createAgentPendingApproval = null;
+    
+    // Disable any rendered Approve/Reject buttons so they can't be re-clicked.
+    document.querySelectorAll('#create-agent-messages button').forEach(btn => {
+        const label = (btn.textContent || '').toLowerCase();
+        if (label.includes('approve') || label.includes('reject')) {
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+            btn.style.cursor = 'not-allowed';
+        }
+    });
+    
     addCreateAgentMessage('user', decision === 'approve' ? '✓ Approved' : '✗ Rejected');
     document.getElementById('create-agent-loading').style.display = 'block';
     
@@ -921,8 +941,8 @@ async function sendCreateAgentApproval(decision) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                session_id: createAgentPendingApproval.session_id,
-                tool_use_id: createAgentPendingApproval.tool_use_id,
+                session_id: pending.session_id,
+                tool_use_id: pending.tool_use_id,
                 decision: decision,
                 allow_submit: document.getElementById('create-agent-submit-to-aws')?.checked || false
             })
@@ -1250,7 +1270,11 @@ async function sendApproval(decision) {
             body: JSON.stringify({
                 session_id: currentSessionId,
                 tool_use_id: currentToolUseId,
-                decision: decision
+                decision: decision,
+                // Sent so the server can verify the write actually landed
+                // (a rejected approval also returns status 'complete').
+                opportunity_id: document.getElementById('opp-id').value,
+                next_steps: document.getElementById('generated-next-steps').value
             })
         });
         const data = await response.json();
@@ -1928,6 +1952,25 @@ async function processCall() {
             ? `<a href="${data.deal_url}" target="_blank" rel="noopener" style="color:#00d4ff;">${data.deal_id}</a>`
             : (data.deal_id || '');
         let html = renderProcessSteps(data);
+
+        // A submit that was requested but didn't land is a PARTIAL success: the
+        // HubSpot deal and ACE opportunity exist, but the co-sell submit failed.
+        // Show a warning box with the actual reason instead of a celebratory one.
+        const submitRequested = data.steps && data.steps.submit !== null && data.steps.submit !== undefined;
+        const submitFailed = submitRequested && !data.submitted;
+
+        if (submitFailed) {
+            html += `<div style="background: rgba(255,193,7,0.10); border:1px solid rgba(255,193,7,0.6); border-radius:8px; padding:14px; margin-top:10px;">`;
+            html += `<p style="margin:0 0 8px;"><strong>⚠️ Created, but not submitted to AWS.</strong></p>`;
+            html += `<p style="margin:4px 0; font-size:13px;">HubSpot deal: ${dealLink}</p>`;
+            html += `<p style="margin:4px 0; font-size:13px;">ACE opportunity: <strong>${aceId || '—'}</strong> · <span style="color:#ffb84d;">co-sell submit failed</span></p>`;
+            html += `<p style="margin:8px 0 0; font-size:13px; color:#ffb3b3; white-space:pre-wrap;"><strong>Reason:</strong> ${escapeHtml(data.submit_error || 'Unknown error — see the demo server log.')}</p>`;
+            html += `<p style="margin:10px 0 0; font-size:13px; color:#ccc;">The opportunity was created and is in <em>Pending Submission</em>. Fix the issue above (or open it in Partner Central), then submit from the <strong>📝 Create from Notes</strong> / <strong>💬 Ask Questions</strong> tab.</p>`;
+            html += `</div>`;
+            resultEl.innerHTML = html;
+            return;
+        }
+
         html += `<div style="background: rgba(0,255,136,0.08); border:1px solid rgba(0,255,136,0.4); border-radius:8px; padding:14px; margin-top:10px;">`;
         html += `<p style="margin:0 0 8px;"><strong>🎉 Call processed end to end.</strong></p>`;
         html += `<p style="margin:4px 0; font-size:13px;">HubSpot deal: ${dealLink}</p>`;
@@ -1944,17 +1987,25 @@ async function processCall() {
 
 function renderProcessSteps(data) {
     const steps = data.steps || {};
-    const row = (label, state) => {
+    // Render a step row, and when it failed, show the specific reason
+    // underneath it (indented) so the user knows what to fix.
+    const row = (label, state, detail) => {
         const icon = state === 'ok' ? '✅' : (state === 'error' ? '❌' : '⏳');
         const color = state === 'ok' ? '#00ff88' : (state === 'error' ? '#ff6b6b' : '#888');
-        return `<div style="padding:4px 0; color:${color}; font-size:13px;">${icon} ${label}</div>`;
+        let out = `<div style="padding:4px 0; color:${color}; font-size:13px;">${icon} ${label}</div>`;
+        if (state === 'error' && detail) {
+            out += `<div style="margin:2px 0 6px 22px; color:#ff9b9b; font-size:12px; white-space:pre-wrap;">↳ ${escapeHtml(detail)}</div>`;
+        }
+        return out;
     };
     let html = '<div style="background: rgba(255,255,255,0.04); border-radius:8px; padding:12px; margin-bottom:10px;">';
     html += row('Extract deal fields from the call', steps.extract);
     html += row('Create deal in HubSpot', steps.hubspot);
-    html += row('Register opportunity in ACE', steps.ace);
+    // The top-level error covers extract/hubspot/ace failures (which abort the
+    // flow); the submit step carries its own submit_error and is non-fatal.
+    html += row('Register opportunity in ACE', steps.ace, steps.ace === 'error' ? data.error : null);
     if (steps.submit !== null && steps.submit !== undefined) {
-        html += row('Submit to AWS for co-sell review', steps.submit);
+        html += row('Submit to AWS for co-sell review', steps.submit, data.submit_error);
     }
     html += '</div>';
     return html;

@@ -252,8 +252,11 @@ class OrchestratorAgent:
             logger.info("Process-call: extracting fields from notes...")
             fields = self.next_steps_generator.extract_call_fields(notes)
             if not fields:
+                steps["extract"] = "error"
                 return {"success": False, "steps": steps,
-                        "error": "Could not extract opportunity fields from the notes."}
+                        "error": ("Could not extract opportunity fields from the notes. "
+                                  "Make sure the notes include a customer/company name, a "
+                                  "business problem, and ideally a contact and expected spend.")}
             steps["extract"] = "ok"
 
             # Step 2: create the HubSpot deal + contact (API — the agent has no
@@ -298,6 +301,17 @@ class OrchestratorAgent:
             company = fields.get("company_name") or "the customer"
             run_token = datetime.now().strftime("Demo-%m%d-%H%M%S")
             unique_company = f"{company} ({run_token})"
+            # When we intend to submit for co-sell, the opportunity must ask for
+            # AWS support: AWS rejects a Co-Sell submit if PrimaryNeedsFromAws is
+            # "Do Not Need Support from AWS Sales Rep". Steer the agent here, and
+            # enforce it in code before submit (see ensure_cosell_ready below).
+            cosell_clause = (
+                "Because this opportunity will be submitted to AWS for co-sell, set "
+                "PrimaryNeedsFromAws to a co-sell support value such as "
+                "'Co-Sell - Architectural Validation'. Do NOT set it to 'Do Not Need "
+                "Support from AWS Sales Rep'. "
+                if submit_to_aws else ""
+            )
             create_instruction = (
                 "Create a new AWS Partner Central opportunity from the meeting notes below. "
                 "Extract the customer account, primary contact, project/business problem, "
@@ -305,6 +319,7 @@ class OrchestratorAgent:
                 f"IMPORTANT: set the customer company name to exactly '{unique_company}' "
                 "(this unique demo suffix avoids AWS duplicate-opportunity detection so the "
                 "opportunity can be submitted). "
+                f"{cosell_clause}"
                 "Create exactly ONE opportunity. Do NOT submit it to AWS — stop as soon as "
                 "the opportunity is created and tell me its opportunity ID."
                 f"\n\n## Meeting Notes:\n{notes}"
@@ -331,6 +346,23 @@ class OrchestratorAgent:
             submitted = False
             submit_error = None
             if submit_to_aws:
+                # Enforce co-sell submittability in code before attempting the
+                # submit. If the agent left PrimaryNeedsFromAws as "Do Not Need
+                # Support from AWS Sales Rep" (or empty), AWS rejects the Co-Sell
+                # submit — patch it to a co-sell value first.
+                cosell = self.mcp_client.ensure_cosell_ready(ace_id)
+                cosell_error = None
+                if not cosell.get("success"):
+                    cosell_error = cosell.get("error")
+                    logger.warning(
+                        f"Process-call: could not make {ace_id} co-sell ready: {cosell_error}"
+                    )
+                elif cosell.get("changed"):
+                    logger.info(
+                        f"Process-call: set a co-sell PrimaryNeedsFromAws on {ace_id} "
+                        f"so it can be submitted."
+                    )
+
                 logger.info(f"Process-call: asking the agent to submit {ace_id} for co-sell...")
                 submit_instruction = (
                     f"Submit opportunity {ace_id} to AWS for review as a co-sell engagement "
@@ -348,8 +380,28 @@ class OrchestratorAgent:
                     api_submit = self.mcp_client.submit_opportunity(ace_id)
                     if api_submit.get("success"):
                         submitted = self._poll_review_submitted(ace_id, attempts=4, delay=2)
+                        if not submitted:
+                            submit_error = (
+                                "AWS accepted the submission request but the opportunity "
+                                "hasn't moved to a submitted review status yet. It may still "
+                                "be processing — check it in Partner Central in a few minutes."
+                            )
                     else:
                         submit_error = api_submit.get("error")
+
+                # Always give the user a concrete reason when submit didn't land.
+                if not submitted and not submit_error:
+                    submit_error = (
+                        "The submission did not complete. Check the opportunity in Partner "
+                        "Central and the demo server log for details."
+                    )
+                # If we also couldn't auto-fix the co-sell field, add that context —
+                # it's a common cause of submit rejections.
+                if not submitted and cosell_error:
+                    submit_error = (
+                        f"{submit_error}\n(Also: could not automatically set a co-sell "
+                        f"PrimaryNeedsFromAws value: {cosell_error})"
+                    )
                 steps["submit"] = "ok" if submitted else "error"
 
             return {

@@ -10,7 +10,16 @@
     <div class="container">
         <h1>🤖 Agent-to-Agent Demo</h1>
         <p class="subtitle">Custom Orchestrator Agent ↔ AWS Partner Central MCP Agent</p>
-        
+
+        <div class="prod-warning" role="alert">
+            <span class="prod-warning-title">⚠️ Sample application — not production-ready</span>
+            <p>This is a sample reference application that demonstrates agent-to-agent capabilities. It is provided as-is for learning and prototyping, not as production-ready software. Because creating and updating opportunities can involve a <strong>production CRM and production Partner Central data</strong>, have your engineering team inspect, test, and customize it for your own environment and controls before running it against a production environment.</p>
+            <ul>
+                <li><strong>Use least-privilege, temporary credentials.</strong> The hosted deployment uses an attached IAM role, so no one enters credentials. For the CLI and local web app, prefer IAM Identity Center (SSO) or other temporary credentials over long-term access keys, and scope permissions to only the actions the app needs.</li>
+                <li><strong>Put it through your normal change-management process</strong> before using it against production.</li>
+            </ul>
+        </div>
+
         <div class="architecture">
             <pre>
 ┌─────────────────────────────────────┐         ┌─────────────────────────────────────┐

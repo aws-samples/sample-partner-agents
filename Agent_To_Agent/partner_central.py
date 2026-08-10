@@ -169,6 +169,70 @@ class PartnerCentralMCPClient:
             logger.error(f"Error submitting opportunity {opportunity_id} to AWS: {e}")
             return {"success": False, "error": str(e)}
 
+    # A Co-Sell submit is rejected by AWS when PrimaryNeedsFromAws is
+    # "Do Not Need Support from AWS Sales Rep" (or empty) — the two are
+    # contradictory. Any of these co-sell values makes the opportunity
+    # submittable.
+    DO_NOT_NEED_SUPPORT = "Do Not Need Support from AWS Sales Rep"
+    DEFAULT_COSELL_NEEDS = ["Co-Sell - Architectural Validation"]
+
+    def update_primary_needs(self, opportunity_id: str, needs: List[str] = None) -> Dict:
+        """Patch an opportunity's PrimaryNeedsFromAws via UpdateOpportunity.
+
+        UpdateOpportunity requires the current LastModifiedDate as an
+        optimistic-concurrency token, so we read the opportunity first.
+        """
+        needs = needs or self.DEFAULT_COSELL_NEEDS
+        try:
+            opp = self.get_opportunity(opportunity_id)
+            if not opp:
+                return {"success": False, "error": f"Opportunity {opportunity_id} not found"}
+            kwargs = {
+                "Catalog": self.config.get('catalog', 'Sandbox'),
+                "Identifier": opportunity_id,
+                "PrimaryNeedsFromAws": needs,
+            }
+            last_modified = opp.get("LastModifiedDate")
+            if last_modified:
+                kwargs["LastModifiedDate"] = last_modified
+            logger.info(f"Updating PrimaryNeedsFromAws for {opportunity_id} -> {needs}")
+            resp = self.pc_client.update_opportunity(**kwargs)
+            return {"success": True, "response": resp}
+        except Exception as e:
+            logger.error(f"Error updating PrimaryNeedsFromAws for {opportunity_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def ensure_cosell_ready(self, opportunity_id: str) -> Dict:
+        """Guarantee an opportunity can be submitted for co-sell.
+
+        Checks PrimaryNeedsFromAws and, if it's empty or set to
+        "Do Not Need Support from AWS Sales Rep", updates it to a co-sell
+        value. This enforces the requirement in code instead of relying on the
+        agent to set the right value at create time.
+
+        Returns {"success": bool, "changed": bool, "error": str|None}.
+        """
+        try:
+            opp = self.get_opportunity(opportunity_id)
+            needs = opp.get("PrimaryNeedsFromAws") or []
+            if isinstance(needs, str):
+                needs = [needs]
+            # Already co-sell ready — nothing to do.
+            if any(str(n).startswith("Co-Sell") for n in needs):
+                return {"success": True, "changed": False}
+            # Empty or "Do Not Need Support..." — patch it so submit succeeds.
+            logger.info(
+                f"Opportunity {opportunity_id} PrimaryNeedsFromAws={needs or 'unset'} is "
+                f"not co-sell submittable; setting a co-sell value."
+            )
+            upd = self.update_primary_needs(opportunity_id)
+            if upd.get("success"):
+                return {"success": True, "changed": True}
+            return {"success": False, "changed": False, "error": upd.get("error")}
+        except Exception as e:
+            logger.error(f"ensure_cosell_ready failed for {opportunity_id}: {e}")
+            return {"success": False, "changed": False, "error": str(e)}
+
     def get_aws_opportunity_summary(self, opportunity_id: str) -> Dict:
         """Fetch the AWS-side summary of an opportunity (returns Origin, InvolvementType, etc.)."""
         try:
