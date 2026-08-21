@@ -199,8 +199,11 @@ def _register_builtin_adapters() -> None:
     # Order here determines the order CRMs appear in the UI dropdown.
     from crm import hubspot_adapter  # noqa: F401
     from crm import salesforce_adapter  # noqa: F401
-    # Pipedrive is not used in the workshop; uncomment to re-enable it in the UI.
-    # from crm import pipedrive_adapter  # noqa: F401
+    from crm import pipedrive_adapter  # noqa: F401
+    # PipeRun connects via its MCP server (crm/piperun_client.py) rather than
+    # direct REST. Requires the built PipeRun MCP server (see piperun_client.py
+    # for PIPERUN_MCP_SERVER / PIPERUN_MCP_NODE configuration).
+    from crm import piperun_adapter  # noqa: F401
 
 
 _register_builtin_adapters()

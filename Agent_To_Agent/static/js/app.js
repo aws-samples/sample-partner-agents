@@ -524,6 +524,12 @@ let createAgentSessionId = null;
 let createAgentPendingApproval = null;
 let createAgentRecordId = null;
 let createAgentInitialPrompt = null;
+// Resume state: `active` is set while a conversation for the current record is
+// open, `completed` once an opportunity has been created. Reopening the same
+// record resumes only while active-and-not-completed; after completion it
+// starts a fresh conversation so the user can create another opportunity.
+let createAgentActive = false;
+let createAgentCompleted = false;
 
 // Simple markdown-to-HTML formatter for agent responses.
 // Handles **bold**, `code`, line breaks, numbered/bullet lists.
@@ -634,6 +640,16 @@ async function openCreateViaAgentModal() {
         return;
     }
     
+    // Resume, don't restart: if a conversation for this SAME record is still
+    // in progress (e.g. the modal was closed via the × button mid-flow), just
+    // re-show it with its messages and any pending approval intact instead of
+    // starting a brand-new session. Once the create has completed — or when a
+    // different record is selected — we start fresh below.
+    if (createAgentActive && !createAgentCompleted && createAgentRecordId === selectedDealId) {
+        document.getElementById('create-agent-modal').classList.add('active');
+        return;
+    }
+    
     const token = document.getElementById('crm-token').value;
     const instanceUrl = document.getElementById('crm-instance-url').value;
     const spec = _getCurrentCrmSpec();
@@ -642,6 +658,8 @@ async function openCreateViaAgentModal() {
     createAgentSessionId = null;
     createAgentPendingApproval = null;
     createAgentRecordId = selectedDealId;
+    createAgentActive = true;
+    createAgentCompleted = false;
     
     // Show modal
     document.getElementById('create-agent-subtitle').textContent = `From ${spec.display_name} ${spec.record_label} ${selectedDealId}`;
@@ -992,6 +1010,10 @@ async function sendCreateAgentApproval(decision) {
 }
 
 async function onCreateAgentSuccess(aceOpportunityId) {
+    // Mark the conversation complete so reopening this record starts a fresh
+    // create rather than resuming the finished thread.
+    createAgentCompleted = true;
+
     // Auto-fill other tabs
     document.getElementById('opp-id').value = aceOpportunityId;
     document.getElementById('chat-opp-id').value = aceOpportunityId;

@@ -111,7 +111,10 @@
         </div>
         
         <!-- Create via Agent Modal -->
-        <div class="modal-overlay" id="create-agent-modal" onclick="if (event.target === this) closeCreateAgentModal()">
+        <!-- No click-outside-to-close: the create flow runs a live agent
+             conversation (with a human-in-the-loop approval), so an accidental
+             backdrop click must NOT dismiss it. Close only via the × button. -->
+        <div class="modal-overlay" id="create-agent-modal">
             <div class="modal-content" style="max-width: 800px;">
                 <button class="modal-close" onclick="closeCreateAgentModal()" aria-label="Close">×</button>
                 <div class="modal-title">🤖 Create ACE Opportunity via Partner Central Agent</div>

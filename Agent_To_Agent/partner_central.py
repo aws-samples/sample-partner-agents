@@ -552,6 +552,42 @@ class PartnerCentralMCPClient:
                 "error": str(e),
             }
 
+    def create_opportunity_from_piperun(self, deal: 'PipeRunDeal', project_title: str = None) -> Dict:
+        """Create a new ACE opportunity from PipeRun deal data using the PipeRun mapper.
+
+        The PipeRun deal is fetched via the PipeRun MCP server upstream; here it
+        is mapped and created through the Partner Central Selling API exactly
+        like the other CRMs.
+        """
+        try:
+            from crm.piperun_mapper import PipeRunToPartnerCentralMapper
+
+            mapper = PipeRunToPartnerCentralMapper(catalog=self.config.get('catalog', 'Sandbox'))
+            request_payload = mapper.map_deal_to_opportunity(deal, project_title)
+
+            logger.info(f"Creating opportunity from PipeRun deal {deal.deal_id}...")
+            logger.info(f"  PartnerOpportunityIdentifier: {request_payload.get('PartnerOpportunityIdentifier')}")
+            logger.info(f"  TargetCloseDate: {request_payload.get('LifeCycle', {}).get('TargetCloseDate')}")
+            logger.info(f"📤 CREATE OPPORTUNITY REQUEST: {json.dumps(request_payload, separators=(',', ':'))}")
+
+            response = self.pc_client.create_opportunity(**request_payload)
+
+            logger.info(f"📥 CREATE OPPORTUNITY RESPONSE: {json.dumps(response, separators=(',', ':'), default=str)}")
+            logger.info(f"Opportunity created successfully: {response.get('Id', 'Unknown')}")
+
+            return {
+                "success": True,
+                "opportunity_id": response.get("Id"),
+                "response": response,
+            }
+
+        except Exception as e:
+            logger.error(f"❌ CREATE OPPORTUNITY ERROR: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
     # ------------------------------------------------------------------
     # Shared MCP plumbing
     #
