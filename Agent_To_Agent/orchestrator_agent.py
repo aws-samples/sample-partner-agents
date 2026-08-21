@@ -27,6 +27,7 @@ from context_sources import ContextSource, AgentResult, SlackReader, FileReader
 from crm.hubspot_client import HubSpotClient
 from crm.salesforce_client import SalesforceClient
 from crm.pipedrive_client import PipedriveClient
+from crm.piperun_client import PipeRunMCPClient
 from next_steps import NextStepsGenerator
 from partner_central import PartnerCentralMCPClient, MarketplaceCatalogClient
 
@@ -37,7 +38,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     'OrchestratorAgent', 'AgentResult', 'ContextSource', 'SlackReader',
     'FileReader', 'HubSpotClient', 'SalesforceClient', 'PipedriveClient',
-    'NextStepsGenerator', 'PartnerCentralMCPClient', 'MarketplaceCatalogClient',
+    'PipeRunMCPClient', 'NextStepsGenerator', 'PartnerCentralMCPClient',
+    'MarketplaceCatalogClient',
 ]
 
 
@@ -46,7 +48,8 @@ class OrchestratorAgent:
     
     def __init__(self, config_path: str = None, hubspot_token: str = None,
                  salesforce_token: str = None, salesforce_instance_url: str = None,
-                 pipedrive_token: str = None, pipedrive_instance_url: str = None):
+                 pipedrive_token: str = None, pipedrive_instance_url: str = None,
+                 piperun_token: str = None):
         self.slack_reader = SlackReader()
         self.file_reader = FileReader()
         self.next_steps_generator = NextStepsGenerator()
@@ -54,6 +57,10 @@ class OrchestratorAgent:
         self.hubspot_client = HubSpotClient(hubspot_token)
         self.salesforce_client = SalesforceClient(salesforce_token, salesforce_instance_url)
         self.pipedrive_client = PipedriveClient(pipedrive_token, pipedrive_instance_url)
+        # PipeRun connects via its MCP server (not REST); the client is cheap
+        # to construct here (no connection until a method is called) and is
+        # rebound to a UI-token-scoped client by PipeRunAdapter at call time.
+        self.piperun_client = PipeRunMCPClient(piperun_token)
         self.marketplace_client = MarketplaceCatalogClient(
             region=self.mcp_client.config.get('region', 'us-east-1')
         )
@@ -558,6 +565,66 @@ class OrchestratorAgent:
     def list_pipedrive_deals(self, limit: int = 10):
         """List recent Pipedrive deals."""
         return self.pipedrive_client.list_deals(limit)
+
+    def create_opportunity_from_piperun(self, deal_id: str, project_title: str = None) -> Dict:
+        """
+        Create an ACE opportunity from a PipeRun deal.
+
+        PipeRun data is fetched through the PipeRun MCP server (see
+        crm/piperun_client.py); the mapping and create call are otherwise
+        identical to the other CRMs.
+
+        Args:
+            deal_id: PipeRun deal numeric ID.
+            project_title: Optional custom title for the ACE opportunity.
+
+        Returns:
+            Dict with success status, ACE opportunity ID, and any errors.
+        """
+        try:
+            logger.info(f"Fetching PipeRun deal: {deal_id}")
+
+            deal = self.piperun_client.get_deal(deal_id)
+            if not deal:
+                return {
+                    "success": False,
+                    "error": f"Could not fetch PipeRun deal: {deal_id}",
+                }
+
+            logger.info(f"Found deal: {deal.title} ({deal.org_name})")
+            logger.info(f"  Value: ${deal.value:,.2f}")
+            logger.info(f"  Stage: {deal.stage}")
+            logger.info(f"  Contact: {deal.contact_name} ({deal.contact_email})")
+
+            result = self.mcp_client.create_opportunity_from_piperun(deal, project_title)
+
+            if result.get("success"):
+                logger.info(f"✅ ACE Opportunity created: {result.get('opportunity_id')}")
+            else:
+                logger.error(f"❌ Failed to create opportunity: {result.get('error')}")
+
+            return {
+                "success": result.get("success", False),
+                "piperun_deal": {
+                    "id": deal.deal_id,
+                    "name": deal.title,
+                    "organization": deal.org_name,
+                    "amount": deal.value,
+                },
+                "ace_opportunity_id": result.get("opportunity_id"),
+                "error": result.get("error"),
+            }
+
+        except Exception as e:
+            logger.error(f"Error creating opportunity from PipeRun: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+    def list_piperun_deals(self, limit: int = 10):
+        """List recent PipeRun deals (via the PipeRun MCP server)."""
+        return self.piperun_client.list_deals(limit)
 
     def sync_to_hubspot(self, opportunity_id: str, hubspot_deal_id: str) -> Dict:
         """

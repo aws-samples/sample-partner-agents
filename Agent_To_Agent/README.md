@@ -1,6 +1,8 @@
 # Agent-to-Agent: CRM Integration with AWS Partner Central Agent
 
-An AI orchestrator agent that communicates with the **AWS Partner Central Agent** to automate opportunity management, and integrates with CRM systems (HubSpot, Salesforce, Pipedrive) to create ACE opportunities from deals.
+An AI orchestrator agent that communicates with the **AWS Partner Central Agent** to automate opportunity management, and integrates with CRM systems (HubSpot, Salesforce, Pipedrive, and PipeRun) to create ACE opportunities from deals.
+
+> **CRM connection styles:** HubSpot, Salesforce, and Pipedrive connect via their **REST APIs**. **PipeRun** is different — it connects through a **community-maintained MCP server** ([dinhogehm/mcp-piperun](https://github.com/dinhogehm/mcp-piperun)), demonstrating how a CRM can be plugged in via MCP rather than a hand-written REST client. See [PipeRun Integration (via MCP)](#piperun-integration-via-mcp).
 
 ## Why Agent-to-Agent?
 
@@ -87,7 +89,7 @@ This application demonstrates **agent-to-agent communication** — a pattern whe
 - **Web UI** (Flask): Interactive demo for creating/updating opportunities, chat with the PC Agent
 - **CLI**: Full command-line interface for scripting and automation
 - **REST API** (FastAPI): Headless integration for services and CI/CD
-- **CRM Integrations**: HubSpot, Salesforce, Pipedrive
+- **CRM Integrations**: HubSpot, Salesforce, Pipedrive (REST), and PipeRun (via a community MCP server)
 - **Bi-directional Sync**: Push ACE status back to your CRM (Demo UI supports HubSpot; CLI supports all CRMs)
 - **Slack Integration**: Read messages from channels as context (optional)
 - **AI-Powered Generation**: Use Claude (via Amazon Bedrock, orchestrated with the Strands Agents SDK) to create actionable next steps
@@ -332,6 +334,25 @@ export PIPEDRIVE_INSTANCE_URL="https://yourco.pipedrive.com"
 python orchestrator_agent.py pipedrive-sync -o O15081741 -d 12345
 ```
 
+### PipeRun Integration (via MCP)
+
+PipeRun is available in the **Demo UI** CRM dropdown (select **"PipeRun (via MCP)"**, paste your API token, and load deals). Unlike the other CRMs, PipeRun does **not** use a hand-written REST client — the app connects to a community-maintained **PipeRun MCP server** over stdio and calls its tools (`list_deals`, `get_deal`, `list_stages`, `get_person`, `get_company`), then maps the result to a Partner Central opportunity.
+
+**MCP server:** [github.com/dinhogehm/mcp-piperun](https://github.com/dinhogehm/mcp-piperun) — a third-party, community-maintained (not official PipeRun or AWS) wrapper around the [PipeRun CRM API](https://developers.pipe.run/). Review its license and code before using it in your own environment.
+
+**Prerequisites:**
+1. **Node.js 18+** (the MCP server is a Node process spawned over stdio).
+2. **Build the MCP server** once:
+   ```bash
+   git clone https://github.com/dinhogehm/mcp-piperun.git
+   cd mcp-piperun/piperun-mcp-server && npm install && npm run build
+   ```
+3. Point the app at the built server (see env vars below). If `mcp-piperun` is checked out next to this repo, it is auto-discovered.
+
+The `mcp` Python SDK (already in `requirements.txt`) is used to talk to the server. There is currently **no PipeRun CLI subcommand** — it's wired for the Demo UI create flow.
+
+> **Stage mapping:** PipeRun accounts are often in Portuguese. The mapper (`crm/piperun_mapper.py`) maps the "Vendas" funnel stages to Partner Central stages — e.g. `Reunião → Technical Validation`, `Proposta`/`Follow-Up → Business Validation`, `Negociação`/`Contrato → Committed`, `Won → Launched`, `Lost → Closed Lost`. Customize `PIPERUN_STAGE_MAPPING` for your funnels.
+
 ### AWS Marketplace Catalog
 
 ```bash
@@ -447,6 +468,9 @@ Set `catalog` to `"AWS"` for production or `"Sandbox"` for testing.
 | `SALESFORCE_INSTANCE_URL` | Salesforce instance URL | For Salesforce |
 | `PIPEDRIVE_API_TOKEN` | Pipedrive API token | For Pipedrive |
 | `PIPEDRIVE_INSTANCE_URL` | Pipedrive instance URL | For Pipedrive |
+| `PIPERUN_API_TOKEN` | PipeRun API token (also accepted from the Demo UI token field) | For PipeRun |
+| `PIPERUN_MCP_SERVER` | Path to the built PipeRun MCP server entrypoint (`…/piperun-mcp-server/build/index.js`). Auto-discovered if `mcp-piperun` is checked out next to this repo | Optional (PipeRun) |
+| `PIPERUN_MCP_NODE` | Path to the `node` binary used to launch the PipeRun MCP server (defaults to `which node`) | Optional (PipeRun) |
 | `BEDROCK_MODEL_ID` | Pin a specific Bedrock Claude model ID; otherwise the first working model from a built-in candidate list is used | Optional |
 | `PROCESS_CALL_ENABLED` | Enable the Demo UI "Process Call" flow (`true`/`1`/`yes`). Creates real CRM + ACE records, so it's off by default | Optional |
 
@@ -528,6 +552,9 @@ python orchestrator_agent.py -o O15081741 -s partner-deals -p "Summarize recent 
 │   ├── pipedrive_client.py  # Pipedrive REST client
 │   ├── pipedrive_adapter.py
 │   ├── pipedrive_mapper.py
+│   ├── piperun_client.py    # PipeRun client (talks to the PipeRun MCP server over stdio)
+│   ├── piperun_adapter.py
+│   ├── piperun_mapper.py
 │   └── crm_registry.py
 ├── sample_meeting_notes/    # Sample context files for testing
 ├── static/                  # Web UI assets (CSS, JS)

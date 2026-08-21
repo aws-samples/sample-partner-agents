@@ -98,6 +98,10 @@ Integrate Partner Central Agents directly into your own applications via the API
 - [Tools Reference](https://docs.aws.amazon.com/partner-central/latest/APIReference/mcp-tools-reference.html)
 - [AWS Partner Central Blog — How to Use Partner Central Agents](https://aws.amazon.com/blogs/awsmarketplace/how-to-use-aws-partner-central-agents/)
 
+### Third-party CRM MCP servers
+
+- [PipeRun CRM MCP server](https://github.com/dinhogehm/mcp-piperun) — a community-maintained (third-party, not official PipeRun or AWS) MCP server that wraps the [PipeRun CRM API](https://developers.pipe.run/). The `Agent_To_Agent` sample uses it to connect PipeRun as a CRM source via MCP. Review its license and code before using it in your own environment.
+
 
 ## Security
 
