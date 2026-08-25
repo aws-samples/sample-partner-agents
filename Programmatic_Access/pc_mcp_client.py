@@ -127,6 +127,7 @@ def make_streaming_request(method, params, quiet=False, max_retries=4):
     full_text = ""
     session_id = None
     approval_requests = []
+    turn_ended = False
 
     for event in client.events():
         data = json.loads(event.data) if event.data else {}
@@ -145,10 +146,19 @@ def make_streaming_request(method, params, quiet=False, max_retries=4):
             if not chunk:
                 chunk = data.get("text", "")
             if chunk:
+                # Separate consecutive agent turns. Deltas carry no separator, so
+                # without this the last token of one turn abuts the first of the
+                # next. Done here rather than on 'completed' so it also applies
+                # when quiet=True, which is how pipeline_chat streams.
+                if turn_ended and full_text:
+                    print("\n", flush=True)
+                    full_text += "\n\n"
+                turn_ended = False
                 full_text += chunk
                 print(chunk, end="", flush=True)
 
         elif event.event == "assistant-response.completed":
+            turn_ended = True
             if not quiet:
                 print("\n[Stream completed]")
 
