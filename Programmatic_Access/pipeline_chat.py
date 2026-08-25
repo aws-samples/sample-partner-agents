@@ -143,7 +143,7 @@ Commands:
 Example questions:
   List all of my active opportunities
   Give me a summary of opportunity O1234567890
-  Update opportunity O1234567890: set expected revenue to $300,000
+  Update opportunity O1234567890: set expected customer spend to $300,000 per month
 """
 
 
