@@ -1,4 +1,6 @@
 import json
+import random
+import time
 import uuid
 import boto3
 import requests
@@ -33,28 +35,84 @@ def _build_payload(method, params):
     }
 
 
-def make_request(method, params):
-    """Send a JSON-RPC 2.0 request and return the parsed response."""
-    response = requests.post(
-        MCP_ENDPOINT,
-        json=_build_payload(method, params),
-        auth=_get_auth(),
-        headers={"Content-Type": "application/json"}
+def _raise_with_detail(response):
+    """Raise an HTTPError that includes what the server actually said.
+
+    response.raise_for_status() reports only "400 Client Error: Bad Request",
+    discarding the body. The MCP endpoint returns throttling as HTTP 400 with
+    {"message": "Rate exceeded. Try again later."}, so without the body there is
+    no way to tell a rate limit apart from a malformed request.
+    """
+    detail = response.text.strip()
+    err_type = response.headers.get("x-amzn-ErrorType", "").split(":")[0]
+    request_id = response.headers.get("x-amzn-RequestId", "unknown")
+    raise requests.HTTPError(
+        f"HTTP {response.status_code}"
+        + (f" ({err_type})" if err_type else "")
+        + f": {detail} [x-amzn-RequestId: {request_id}]",
+        response=response,
     )
-    response.raise_for_status()
-    return response.json()
 
 
-def make_streaming_request(method, params, quiet=False):
+def _is_throttling(response):
+    """Detect throttling from any of three signals.
+
+    The configuration reference documents rate limiting only as JSON-RPC
+    -32004 LIMIT_EXCEEDED, so the HTTP 400 + ThrottlingException shape this
+    endpoint actually returns is undocumented. Match the body and 429 too
+    rather than relying on a single undocumented header.
+    """
+    if response.status_code == 429:
+        return True
+    if response.status_code != 400:
+        return False
+    return ("ThrottlingException" in response.headers.get("x-amzn-ErrorType", "")
+            or "Rate exceeded" in response.text)
+
+
+def make_request(method, params, max_retries=4):
+    """Send a JSON-RPC 2.0 request and return the parsed response.
+
+    Retries throttling with exponential backoff plus jitter. The service
+    rate-limits more aggressively than you might expect, and a throttled call
+    arrives as HTTP 400 rather than as a JSON-RPC LIMIT_EXCEEDED (-32004) error.
+    """
+    for attempt in range(max_retries + 1):
+        response = requests.post(
+            MCP_ENDPOINT,
+            json=_build_payload(method, params),
+            auth=_get_auth(),
+            headers={"Content-Type": "application/json"}
+        )
+        if _is_throttling(response) and attempt < max_retries:
+            wait = 2 ** attempt + random.uniform(0, 1)
+            print(f"  Rate exceeded — retrying in {wait:.1f}s "
+                  f"({attempt + 1}/{max_retries})")
+            time.sleep(wait)
+            continue
+        if not response.ok:
+            _raise_with_detail(response)
+        return response.json()
+
+
+def make_streaming_request(method, params, quiet=False, max_retries=4):
     """Send a JSON-RPC 2.0 request with SSE streaming. Returns text, sessionId, and approvals."""
-    response = requests.post(
-        MCP_ENDPOINT,
-        json=_build_payload(method, params),
-        auth=_get_auth(),
-        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-        stream=True
-    )
-    response.raise_for_status()
+    for attempt in range(max_retries + 1):
+        response = requests.post(
+            MCP_ENDPOINT,
+            json=_build_payload(method, params),
+            auth=_get_auth(),
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+            stream=True
+        )
+        if _is_throttling(response) and attempt < max_retries:
+            wait = 2 ** attempt + random.uniform(0, 1)
+            print(f"  Rate exceeded — retrying in {wait:.1f}s ({attempt + 1}/{max_retries})")
+            time.sleep(wait)
+            continue
+        break
+    if not response.ok:
+        _raise_with_detail(response)
 
     # If server returns JSON instead of SSE, parse it directly
     content_type = response.headers.get("Content-Type", "")
