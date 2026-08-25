@@ -121,6 +121,15 @@ def main():
         if file_path.lower() in ("quit", "exit"):
             break
 
+        # Expand ~ once, up front, so this check and validate_file agree.
+        file_path = os.path.expanduser(file_path)
+        typed_message = None
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+        looks_like_path = os.sep in file_path or ext in ALLOWED_EXTENSIONS
+        if file_path and not looks_like_path:
+            typed_message = file_path
+            file_path = ""
+
         s3_uri = filename = None
         if file_path:
             if not validate_file(file_path):
@@ -132,8 +141,11 @@ def main():
                 continue
 
         try:
-            prompt = "You" + (" (re: file)" if s3_uri else "") + ": "
-            message = input(prompt).strip()
+            if typed_message:
+                message = typed_message
+            else:
+                prompt = "You" + (" (re: file)" if s3_uri else "") + ": "
+                message = input(prompt).strip()
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye!")
             break
