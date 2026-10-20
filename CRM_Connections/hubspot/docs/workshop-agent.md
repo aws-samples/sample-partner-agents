@@ -60,20 +60,20 @@ The workshop facilitator will give you the actual repo URL.
 
 ### 0c. Verify (and optionally install) prerequisites
 
-Run the checker from the repo root:
+Run the checker from the repo root. The first command reports status only; the second also installs anything missing.
 
 **macOS / Linux:**
 
 ```bash
-./scripts/check-prereqs.sh --agent             # report status only
-./scripts/check-prereqs.sh --agent --install   # also install what's missing
+./scripts/check-prereqs.sh --agent
+./scripts/check-prereqs.sh --agent --install
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-.\scripts\check-prereqs.ps1 -Agent             # report status only
-.\scripts\check-prereqs.ps1 -Agent -Install    # also install what's missing
+.\scripts\check-prereqs.ps1 -Agent
+.\scripts\check-prereqs.ps1 -Agent -Install
 ```
 
 The `--agent` / `-Agent` flag skips the Python check (Python is only needed for the CRMi workshop, not this one). With `--install` / `-Install`, the script installs missing tools via Homebrew (macOS), apt/dnf (Linux), or winget/Chocolatey (Windows), and installs the HubSpot CLI via `npm`.
@@ -95,13 +95,13 @@ Package manager: brew
 All required tools satisfied.
 ```
 
-If you'd rather check by hand, each of these must succeed:
+If you'd rather check by hand, run each of these. Required versions: Node 22+, AWS CLI 2.15+, HubSpot CLI 8.6+, and any recent Git.
 
 ```bash
-node --version          # v22.x.x or newer
-aws --version           # aws-cli/2.15+
-hs --version            # 8.6.0+
-git --version           # any recent version
+node --version
+aws --version
+hs --version
+git --version
 ```
 
 ---
@@ -470,7 +470,7 @@ Then hard-reload the deal page.
 
 ### `Authorization failed. Reload the HubSpot page and try again.`
 
-The `HUBSPOT_CLIENT_SECRET` in Secrets Manager doesn't match the value on the agent app's Auth tab. Either you pasted the wrong app's secret (CRMi vs Agent) or HubSpot rotated it. Copy from **Development → Projects → hubspot-ace-agent-card → AWS Partner Central Agent → Auth tab → Client secret**, push via `set-secrets.sh HUBSPOT_CLIENT_SECRET --auto-bounce`, hard-reload.
+The `HUBSPOT_CLIENT_SECRET` in Secrets Manager doesn't match the value on the agent app's Auth tab. Either you pasted the wrong app's secret (CRMi vs Agent) or HubSpot rotated it. Copy from **More → Development → Projects → hubspot-ace-agent-card → AWS Partner Central Agent → Auth tab → Client secret**, push via `set-secrets.sh HUBSPOT_CLIENT_SECRET --auto-bounce`, hard-reload.
 
 ### `Session expired or resource not found`
 
@@ -518,4 +518,4 @@ done
 
 > If you deployed with `--env-suffix <name>`, swap `ace-agent` for `ace-agent-<name>` and `crm-connector/ace-agent` for `crm-connector/ace-agent-<name>` in the commands above.
 
-For the HubSpot side: go to **Development → Projects** and delete the **hubspot-ace-agent-card** project. There's no IAM user to clean up — the agent path never created one.
+For the HubSpot side: go to **More → Development → Projects** and delete the **hubspot-ace-agent-card** project. There's no IAM user to clean up — the agent path never created one.
