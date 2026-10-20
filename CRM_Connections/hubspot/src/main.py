@@ -8,6 +8,12 @@ one-time provisioning utility for the partner's HubSpot portal:
     python -m src.main setup-hubspot   # core lifecycle + AWS-team mirror props
     python -m src.main list-stages     # discover stage IDs for STAGE_MAPPING
 
+Both commands require a HubSpot token in the ``HUBSPOT_API_KEY`` env var
+(or a project-root ``.env`` file). Pull it from Secrets Manager, e.g.:
+
+    HUBSPOT_API_KEY="$(./scripts/get-hubspot-token.sh)" python -m src.main list-stages
+    # AWS_PROFILE selects the AWS profile used for the token fetch.
+
 Picklists and the bidirectional editing surface live in
 `scripts/setup_ace_picklists.py` and `scripts/setup_ace_bidirectional_fields.py`
 — run those after `setup-hubspot` for the full property set.
