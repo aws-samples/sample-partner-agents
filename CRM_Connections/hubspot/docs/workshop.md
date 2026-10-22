@@ -11,11 +11,23 @@
 By the end of the workshop you'll have:
 
 1. An **AWS sandbox account** (or your own) with Partner Central API access in the **Sandbox catalog**.
-2. A **HubSpot developer test account** with the connector's UI Extension card installed on the deal record.
-3. The CRM stack deployed to your AWS account: 4 Lambdas (Share / Submit / Refresh / Pull), API Gateway, EventBridge rule, and DynamoDB lock table.
-4. A working round-trip: edit a deal in HubSpot → click Share → see the opportunity in AWS Partner Central → edit it in AWS → click Refresh → see the change back in HubSpot.
+2. A **HubSpot developer test account** with the connector's CRM UI Extension card (Share / Submit / Refresh) installed on the deal record — plus the optional **Agent** chat card if you complete Module 14.
+3. The CRM stack deployed to your AWS account: 4 Lambdas (Share / Submit / Refresh / Pull), API Gateway, EventBridge rule, DynamoDB lock table, a Secrets Manager secret, and a Sandbox-scoped IAM role. See **Lab 7** for what each resource does before you deploy.
+4. A working round-trip in both directions: create a deal in HubSpot (through the UI or the HubSpot API) → click Share → see the opportunity in AWS Partner Central; AWS reviews and **approves** it (simulated in the Sandbox catalog) → the approval syncs back to HubSpot, either automatically via EventBridge (when set up) or on demand by clicking **Refresh**; and a later **partner edit** in HubSpot → **Push updates to AWS**.
 
 We'll deploy the CRM mode as the core of the workshop (Modules 0-13). Module 14 is an optional add-on that layers the Partner Central Agent card on top of the same setup (~25 min extra). If you only want the Agent card, the standalone path lives in [`docs/workshop-agent.md`](workshop-agent.md) (~30-45 min).
+
+## Architecture at a glance
+
+Two independent stacks deploy into your AWS account — the **CRM stack** (`ace-share-refresh`, Modules 0–13) and the optional **Agent stack** (`ace-agent`, Module 14) — all in `us-east-1` against the Partner Central **Sandbox** catalog by default.
+
+![Complete workshop architecture](architectureDiagram.png)
+
+Flow summary: the CRM card writes to Partner Central via **Share/Submit/Refresh** (HubSpot → AWS), Partner Central changes sync back via the **EventBridge → Pull Lambda** path or the manual **Refresh** (AWS → HubSpot), and the optional Agent card chats with the **Partner Central Agent MCP Server** through an async start/poll Lambda. The end-to-end workflow looks like this:
+
+![End-to-end workshop workflow](workflowDiagram.png)
+
+See [`docs/architecture.md`](architecture.md) for the per-flow walkthrough and full design.
 
 ## Workshop checklist (printable)
 
@@ -28,7 +40,7 @@ We'll deploy the CRM mode as the core of the workshop (Modules 0-13). Module 14 
 - [ ] **6** — Dependencies installed
 - [ ] **7** — CRM stack deployed (`infra/unified-deploy.sh --mode crm`)
 - [ ] **8** — UI Extension card project uploaded (`hs project upload`)
-- [ ] **9** — HubSpot access token + client secret captured from Development → Projects
+- [ ] **9** — HubSpot access token + client secret captured from More → Development → Projects
 - [ ] **10** — Secrets populated (`infra/set-secrets.sh`)
 - [ ] **11** — HubSpot custom properties provisioned
 - [ ] **12** — Test deal created and AWS Partner Central card installed on the deal layout
@@ -63,20 +75,20 @@ Choose your OS and install:
 
 ### 0c. Verify (and optionally install) prerequisites
 
-Run the checker from the repo root:
+Run the checker from the repo root. The first command reports status only; the second also installs anything missing.
 
 **macOS / Linux:**
 
 ```bash
-./scripts/check-prereqs.sh             # report status only
-./scripts/check-prereqs.sh --install   # also install what's missing
+./scripts/check-prereqs.sh
+./scripts/check-prereqs.sh --install
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-.\scripts\check-prereqs.ps1             # report status only
-.\scripts\check-prereqs.ps1 -Install    # also install what's missing
+.\scripts\check-prereqs.ps1
+.\scripts\check-prereqs.ps1 -Install
 ```
 
 With `--install` / `-Install`, the script installs missing tools via Homebrew (macOS), apt/dnf (Linux), or winget/Chocolatey (Windows), and installs the HubSpot CLI via `npm`.
@@ -99,14 +111,14 @@ Package manager: brew
 All required tools satisfied.
 ```
 
-If you'd rather check by hand, each of these must succeed:
+If you'd rather check by hand, run each of these. Required versions: Node 22+ (the HubSpot CLI needs 22+), Python 3.11+ (use `python --version` on Windows), AWS CLI 2.15+, HubSpot CLI 8.6+, and any recent Git.
 
 ```bash
-node --version          # v22.x.x or newer (HubSpot CLI needs 22+)
-python3 --version       # 3.11+ (use `python --version` on Windows)
-aws --version           # aws-cli/2.15+
-hs --version            # 8.6.0+
-git --version           # any recent version
+node --version
+python3 --version
+aws --version
+hs --version
+git --version
 ```
 
 ---
@@ -148,6 +160,13 @@ Use **the same AWS account that's linked to your AWS Partner Central account**. 
 4. Click **Next**.
 
 ### 2c. Attach the connector policy
+
+You have two ways to grant the connector its Partner Central permissions — pick one:
+
+- **Option A — AWS managed policy (simplest).** Attach the AWS-managed **`AWSPartnerCentralSandboxFullAccess`** policy. It grants the full Partner Central Selling API already scoped to the **Sandbox** catalog, so it covers everything the connector calls with nothing to paste. Choose **Attach policies directly**, search for `AWSPartnerCentralSandboxFullAccess`, check it, and skip to Lab 2d. (This is the same managed policy the agent stack uses for Sandbox; the production equivalent is `AWSPartnerCentralFullAccess`.)
+- **Option B — custom least-privilege policy (shown below).** Create a policy that grants only the specific actions the connector uses, Sandbox-scoped via an IAM Condition. Use this if you prefer explicit least privilege. Follow the steps below.
+
+**Option B steps:**
 
 1. **Permissions options**: choose **Attach policies directly**.
 2. Click **Create policy** (opens a new tab).
@@ -196,6 +215,10 @@ Use **the same AWS account that's linked to your AWS Partner Central account**. 
 4. **Save the Access Key ID and Secret Access Key somewhere safe**. You'll paste them into Secrets Manager in Lab 10. AWS only shows the secret once.
 
 > **Reminder**: the policy above scopes the user to the **Sandbox catalog only** via the IAM Condition. To move to production later, swap the `"Sandbox"` literal for `"AWS"` and re-attach the policy.
+
+> **No AWS Marketplace permissions — by design.** This policy is intentionally opportunity-only (`partnercentral:*`). The connector's Share / Submit / Refresh / Pull flows (including associating Solutions and AWS Products) never touch AWS Marketplace, so no `aws-marketplace:*` actions are needed.
+>
+> You only need Marketplace permissions if you want to **associate AWS Marketplace private offers (or Marketplace solutions) to an opportunity**. In that case add the AWS Marketplace Catalog read actions — at minimum `aws-marketplace:ListEntities` and `aws-marketplace:SearchAgreements` — so you can discover the offers to associate (in Sandbox, you browse/select them in the Partner Central console). See [Setup and authentication](https://docs.aws.amazon.com/partner-central/latest/developer-guide/setup-authentication.html). For full production access, AWS pairs the `AWSPartnerCentralFullAccess` and `AWSMarketplaceSellerFullAccess` managed policies rather than a hand-rolled policy.
 
 ---
 
@@ -281,7 +304,7 @@ The CLI prints the new test account's HubSpot Account ID. **Save this number** �
 **Via HubSpot UI** (alternative if CLI version is older):
 
 1. Sign in at [app.hubspot.com](https://app.hubspot.com).
-2. In the **left navigation bar** (the icon rail), click the **Development** icon (typically at the very bottom), then **Testing → Test Accounts**.
+2. Open **More → Development → Testing → Test Accounts**.
 3. Click **Create developer test account**.
 4. Name: `aws-pc-workshop`. Leave Enterprise defaults checked. Click **Create**.
 
@@ -293,7 +316,7 @@ The CLI prints the new test account's HubSpot Account ID. **Save this number** �
 
 Our deployment uses HubSpot's **project-based private app** model (platform 2025.2). The app, its access token, and its client secret are all auto-generated when you upload the project via `hs project upload` in Lab 8. **You don't create a Private App by hand.** That means the actual credential capture lives in Lab 9 below — Lab 5 is just a reference for what's about to happen.
 
-If you're navigating HubSpot's UI looking for "Private Apps", you'll find an empty list at **Settings → Integrations → Legacy apps** (formerly "Private Apps"). That's expected. Project-based apps live under **Development → Projects** instead.
+If you're navigating HubSpot's UI looking for "Private Apps", you'll find an empty list at **More → Development → Legacy Apps** (formerly "Private Apps"). That's expected. Project-based apps live under **More → Development → Projects** instead.
 
 The credentials we'll need (collected in Lab 9):
 
@@ -313,9 +336,11 @@ Scopes are **defined in code** at `hubspot-card/src/app/app-hsmeta.json:config.a
 ```bash
 cd backend && npm ci && cd ..
 cd hubspot-card && npm ci && cd ..
+cd agent-backend && npm ci && cd ..
+cd agent-card && npm ci && cd ..
 ```
 
-`npm ci` runs a postinstall hook that creates two gitignored card-config files (`config.local.ts` and `app-hsmeta.json`) from committed templates. This is what lets `tsc --noEmit` pass on a fresh clone.
+This installs both the CRM card (`backend` + `hubspot-card`) and the optional Agent card (`agent-backend` + `agent-card`, used in Module 14). For each card, `npm ci` runs a postinstall hook that creates two gitignored card-config files (`config.local.ts` and `app-hsmeta.json`) from committed templates. This is what lets `tsc --noEmit` pass on a fresh clone — and the generated `app-hsmeta.json` is the `app` component that `hs project upload` requires.
 
 ### 6b. Install Python dependencies
 
@@ -352,6 +377,24 @@ All suites should pass on a fresh clone. If they don't, ask the workshop facilit
 ## 7. Deploy the CRM stack to AWS
 
 This is the longest step (~5–8 minutes) but it's a single command.
+
+### What gets deployed to your AWS account
+
+Before you run it, here's everything the CRM stack (`ace-share-refresh`) creates in your account. It's all **Sandbox-scoped** and low cost (~$0.45/month, dominated by Secrets Manager):
+
+| Resource | What it's for |
+|---|---|
+| **Share Lambda** | Creates/updates the ACE opportunity from the deal's fields (the Share button). |
+| **Submit Lambda** | Submits a draft opportunity for AWS review. |
+| **Refresh Lambda** | Reads live AWS state (`GetOpportunity` / `GetAwsOpportunitySummary`) and writes it back to the deal (the Refresh button). |
+| **Pull Lambda** | EventBridge consumer — auto-syncs AWS-side changes back to HubSpot. |
+| **API Gateway (HTTP API)** | Receives the card's HMAC-verified `hubspot.fetch` calls and routes them to Share / Submit / Refresh. |
+| **EventBridge rule** | Matches `aws.partnercentral-selling` Opportunity Created/Updated events (Sandbox) and triggers the Pull Lambda. |
+| **DynamoDB pull-lock table** | Prevents the Pull Lambda and the Share-time writeback from racing on the same deal. |
+| **Secrets Manager secret** (`crm-connector/ace-share`) | Holds the ACE access keys, HubSpot token/secret, and stage mapping (you populate it in Lab 10). |
+| **IAM role** | The Lambda execution role, scoped to the Partner Central **Sandbox** policy. |
+
+For the full design (request flows, day-2 operations, cost model), see [`docs/architecture.md`](architecture.md). Module 14 later adds a separate `ace-agent` stack (2 Lambdas + API Gateway + a DynamoDB job table).
 
 ### 7a. Run the unified deploy
 
@@ -466,14 +509,13 @@ Build #1 succeeded. Automatically deploying to workshop ...
 ✔ Deployed build #1 in hubspot-ace-card-v2
 ```
 
-A direct link to the build appears in the output if you want to inspect it in the HubSpot UI (Developer Projects → Activity tab). Subsequent uploads skip the create prompt and just push a new build
-+ deploy.
+A direct link to the build appears in the output if you want to inspect it in the HubSpot UI (More → Development → Projects → Activity tab). Subsequent uploads skip the create prompt and just push a new build and deploy.
 
 ```bash
 cd ..
 ```
 
-> **For the agent card later** (Optional add-ons): same one-liner from `agent-card/`: `hs project upload`. The auth alias is already set.
+> **Agent card?** Don't upload it yet. It's an optional add-on covered in **Module 14**, and its backend isn't deployed until you get there — uploading it now would leave a non-functional chat card on your deals. Module 14 reuses the `workshop` auth alias you just set, so there's nothing extra to do here.
 
 ---
 
@@ -485,10 +527,9 @@ Now that the project is uploaded, the access token and client secret exist in Hu
 
 ### 9a. Drill into the app
 
-1. In HubSpot, find the **Development** icon in the **left navigation bar** (the icon rail; typically at the very bottom). Click it.
-2. In the Development panel, click **Projects**.
-3. Click into the project **`hubspot-ace-card-v2`** (the one you uploaded in Lab 8b). The project Overview tab opens.
-4. Under **Project Components**, click **ACE Share Card** (the top-level app name from `app-hsmeta.json`). This opens the app's detail page, which has its own tab strip: Overview / Auth / Distribution / Settings.
+1. In HubSpot, open **More → Development → Projects**.
+2. Click into the project **`hubspot-ace-card-v2`** (the one you uploaded in Lab 8b). The project Overview tab opens.
+3. Under **Project Components**, click **ACE Share Card** (the top-level app name from `app-hsmeta.json`). This opens the app's detail page, which has its own tab strip: Overview / Auth / Distribution / Settings.
 
 ### 9b. Install the app to surface the access token
 
@@ -498,15 +539,14 @@ The access token only exists *after* the app is installed. New projects need thi
 2. Click **Install now** (it offers to install in your current workshop account — that's correct).
 3. Review the requested scopes, click **Connect app**.
 4. **Heads-up — HubSpot redirects you out of the developer view.** After **Connect app**, you land on **Settings → Integrations → Connected Apps → ACE Share Card** (a consumer-side admin screen showing Overview / Settings / App log). The access token is **NOT** on that page. Navigate back yourself:
-    - In the **left navigation bar** (HubSpot's main left-side icon rail), find the **Development** icon — it's typically at the very bottom. Click it.
-    - In the Development panel that opens, click **Projects**.
+    - Open **More → Development → Projects**.
     - Click **`hubspot-ace-card-v2`**.
     - Under **Project Components**, click **ACE Share Card**.
-    - Click the **Distribution** tab. Your account now shows as **Installed**, with the access token underneath.
-5. Click **Show** on the **Access token** field and copy the revealed value.
+    - Click the **Distribution** tab. Under **Standard install**, your account is now listed with an **Access token** next to it (Show / Copy / Rotate), and the top button reads **Install on a different account** — that's how you know it's installed (there's no literal "Installed" badge).
+5. In that **Standard install** row, click **Show** next to the **Access token** and copy the revealed value.
 6. Save it as `HUBSPOT_PRIVATE_APP_TOKEN` in your notes for Lab 10.
 
-> The access token is re-showable any time. Re-tracing this path (Development → Projects → hubspot-ace-card-v2 → ACE Share Card → Distribution → Show) is the canonical way to retrieve it later.
+> The access token is re-showable any time. Re-tracing this path (More → Development → Projects → hubspot-ace-card-v2 → ACE Share Card → Distribution → Show) is the canonical way to retrieve it later.
 
 ### 9c. Copy the client secret
 
@@ -553,6 +593,8 @@ The script prompts for each key with **hidden stdin** (no echo). Have these valu
 | `HUBSPOT_PRIVATE_APP_TOKEN` | the HubSpot Access Token from Lab 9 |
 | `HUBSPOT_CLIENT_SECRET` | the HubSpot Client Secret from Lab 9 |
 
+> **Newer HubSpot portals use numeric stage IDs.** The default `STAGE_MAPPING` keys off the legacy pipeline slugs (`appointmentscheduled`, `qualifiedtobuy`, …). Some test accounts' `default` pipeline instead uses numeric stage IDs (e.g. `1575643857`). If yours does, the default mapping won't match and Share fails the "deal stage maps to an ACE stage" precondition. Discover your IDs with `HUBSPOT_API_KEY="$(./scripts/get-hubspot-token.sh)" python3 -m src.main list-stages` (`AWS_PROFILE` selects the profile), then set `STAGE_MAPPING` with them, e.g. `1575643857=Qualified;…;1575643863=Launched`. (Deal creation in Lab 12 is unaffected — `create-test-deal.py` auto-detects the first stage of the default pipeline.)
+
 After the last paste:
 
 1. The script writes the merged blob back to Secrets Manager (`Secret updated.`).
@@ -595,7 +637,7 @@ Each step prints `=== N/5  <description> ===` so you can see progress. The HubSp
 
 ### Verify in HubSpot
 
-1. In your test account, **Settings → Properties (under Data Management) → Deal properties (Under select an object)**.
+1. In your test account, click the **gear icon (Settings)** → **Data Management → Properties**, then set **Select an object** to **Deal properties**.
 2. Filter by group: **AWS Partner Fields** (or `aws_partner_fields`).
 3. Confirm you see ~30 fields, including `ace_opportunity_id`, `ace_solutions`, `ace_aws_products`, `ace_country_code`, `aws_review_status`.
 
@@ -613,7 +655,7 @@ The workshop's test account starts empty, so you'll create a deal first, then in
 
 `scripts/create-test-deal.py` POSTs the deal via HubSpot's CRM v3 API and pre-populates **every field the Share Lambda preconditions check** plus the picklists ACE requires on Create:
 
-- Name, stage, amount, future close date, description ≥20 chars
+- Name, stage, amount, currency (`ace_currency_code`, default `USD`), future close date, description ≥20 chars
 - Customer location: country, state, postal code, company name, website
 - ACE picklists: Industry, Customer Use Case, Opportunity Type, Delivery Models, Involvement Type, Visibility, National Security, Marketing Activity flag
 - A free-text solution fallback in `ace_other_solution_description` (replace with `--solution S-XXXXXXX` for the picklist field)
@@ -632,15 +674,15 @@ The script reads the HubSpot token from your Secrets Manager blob, so no token p
 
 **Option 2 — manual through the UI**
 
-1. In the **left navigation bar**, click the **CRM** icon → **Deals**.
-2. Click **Create deal** (top right).
-3. In the right-side panel, fill in:
+1. Open **Deals** — click **Deals** in the left menu, or go to **More → CRM → Deals**.
+2. Top right, click **Add deals → Create new** (the same menu also offers **Import**).
+3. In the create panel, fill in:
 
    | Field | Value |
    |---|---|
    | **Deal name** | `Workshop Smoke Test` |
-   | **Pipeline** | leave default (Sales pipeline) |
-   | **Deal stage** | **Appointment scheduled** |
+   | **Pipeline** | your default deal pipeline |
+   | **Deal stage** | your pipeline's earliest stage (e.g. *Appointment scheduled*, or whatever your pipeline uses — make sure `STAGE_MAPPING` from Lab 10 covers it) |
    | **Amount** | `50000` |
    | **Close date** | a date 3 months from today |
 
@@ -649,36 +691,42 @@ The script reads the HubSpot token from your Secrets Manager blob, so no token p
 
 ### 12b. Install the AWS Partner Central card on the deal layout
 
-> **No script for this one.** HubSpot doesn't expose card-placement via the public API.
+> **No script for this one.** HubSpot doesn't expose card placement via the public API, so this is a one-time manual layout edit in the HubSpot UI.
 
-The card declares its location as `crm.record.tab` in `AceShareCard-hsmeta.json`, which renders the card inside a **middle-column tab** on the deal record. The default Deals layout ships with **no customizable middle-column tab**, so the `Settings → Connected Apps → Manage locations` flow surfaces:
+The card declares its location as `crm.record.tab` in `AceShareCard-hsmeta.json`, so it renders as a **card inside a middle-column tab** on the deal record. The deal layout already has middle-column tabs (e.g. **Overview** / **Catch-up**, **About**, **Activities**) — you add the AWS Partner Central card into one of them from the Card library. Giving the card its own dedicated tab is optional.
 
-> "The following views don't have customizable tabs. Use the customize button to create a tab in the middle column of these views."
-
-Create the tab once, then either drop the card in directly or use the bulk Manage locations flow.
-
-**Step 1 — create a middle-column tab on the deal layout**
-
-1. Open your test deal (`Workshop Smoke Test` from Lab 12a).
-2. In the deal's **middle column**, click **Customize** at the top right of that column. (If you don't see it, click the **gear icon** near the top of the page → **Customize the middle column**.)
-2. Click on your **Default view**
-3. In the layout editor, click **+** in the middle column next to Activities. Name it **AWS Partner Central** (or whatever you prefer).
-4. With the new tab selected, click **Add card** → search `AWS Partner Central` (or `ACE`) from the Card library → click on **Add card** into the tab.
-5. Since you're here, you can edit the **About this deal** on the left side where you can add the newly added ACE fields for updating your deal.
-6. On the **Edit default card** form, select **Add properties** and filter with **ACE** and **AWS** with the custom fields we created earlier.
-5. Click **Save and exit** (top right).
-
-The card now renders inside that new tab on every deal in this pipeline. You can keep this deal open for Lab 13's smoke test.
-
-**Step 2 (optional) — enable the card on additional layouts**
-
-Once the tab exists on the deal layout, the global enable-everywhere path is unblocked:
+**Step 1 — open the Deals record layout editor**
 
 1. Top-right **gear icon** → **Settings**.
-2. Left sidebar → **Integrations → Connected Apps**.
-3. Click **ACE Share Card** → **Settings** tab.
-4. On the **AWS Partner Central** row, click **Manage locations**.
-5. The deal layouts that contain the new tab now appear as checkboxes. Tick the ones you want and click **Save**.
+2. Left sidebar → **Data Management → Objects → Deals**.
+3. Open the **Record Customization** tab, then click your **Default view** (or the view assigned to your pipeline) to edit it.
+
+> Alternatively, from any open deal you can click **Customize** at the top of the middle column to jump straight into the same editor.
+
+**Step 2 — add the AWS Partner Central card to a tab**
+
+1. In the layout editor, select a **middle-column tab** to hold the card — the default **Overview** (a.k.a. Catch-up) tab is fine. *(Optional: to give the card its own tab, click the **+** at the right end of the tab strip — next to Activities — name the new tab, e.g. `AWS Partner Central`, and select it.)*
+2. In the body of the selected tab, click **+ Add card** (the **+** in the floating toolbar), then open the **Card library** tab.
+3. Set **Card type = Apps** (or search `AWS Partner Central`) and select the **AWS Partner Central** card (the Share / Submit / Refresh card).
+4. Click **Add card** on **AWS Partner Central** — it appears as a card block in the tab.
+5. Click **Save and exit** (top right).
+
+> You may also see an **AWS Partner Central Agent** card in the library if you uploaded it. **Don't add it here** — the Agent card is placed later in **Module 14 (Lab 14g)**, after its backend is deployed. Adding it now would put a non-functional chat card on the deal (it has no backend to call until Module 14).
+
+**Step 3 (optional) — surface the ACE fields on the left column**
+
+On the **About this deal** card (left column), open its **Actions** menu (top-right of the card) → **Customize properties** → click the **Add properties** dropdown and search `ACE` / `AWS`, then check the fields you'll edit for Share and **Save**. The ones that matter for the smoke test are:
+
+- `ACE Customer Country Code`, `ACE Customer State or Region`, `ACE Customer Postal Code`
+- `ACE Customer Company Name`, `ACE Customer Website URL`
+- `ACE Industry`, `ACE Customer Use Case`, `ACE Opportunity Type`, `ACE Delivery Models`
+- `ACE Involvement Type`, `ACE Visibility`, `ACE National Security`, `Is Opportunity from Marketing Activity?`
+- `ACE Primary Need from AWS`
+- one of `ACE Solution Offerings` **or** `ACE Other Solution Description`
+
+(Lab 13a lists these again with example values. You can do this from the layout editor or directly on an open deal record; this card edit is a per-user view.)
+
+The card now renders inside that tab on every deal in this pipeline. If you maintain more than one deal record view, repeat Step 2 for each view you want the card on. Keep this deal open for Lab 13's smoke test.
 
 > **Heads-up — first paint can be slow.** On the very first deal view after install, the card may take 5-10 seconds to render while HubSpot warms its UI Extension runtime. Subsequent loads are sub-second.
 
@@ -692,14 +740,22 @@ You'll do one full Share → Refresh round-trip to confirm the integration works
 
 Open `Workshop Smoke Test` (or whatever deal you created). The **AWS Partner Central** card lives in the new middle-column tab you created in Lab 12b — click that tab to bring it into view (if you don't see the tab, re-check Lab 12b).
 
-The tab shows two things:
+On the **AWS Partner Central** card you'll see:
 
-1. The **Share / Refresh / Submit** buttons at the top of the card.
-2. A **validation panel** at the bottom of the card that lists every field the deal is missing for a successful Share. Watch this panel as you fill in fields — it ticks them off in real time.
+1. A **validation checklist** listing every field required for Share, each ticking green as you fill it in. While anything is missing it shows **"Required to share — N field(s) missing"**; once complete it collapses to **"✅ Ready to share to AWS."**
+2. A single **Share** button below the checklist. Its label reflects what the click will do, based on the deal's completeness:
+   - while required fields are still missing it reads **"Share to AWS (save as draft)"** — it saves the opportunity to AWS as a draft, which you Submit for review separately;
+   - once the checklist is all green (**✅ Ready to share to AWS**) it reads **"Share to AWS (creates and submits)"** — one click creates the opportunity *and* submits it for AWS review.
+
+> **Submit** and **Refresh** are not shown up front — they appear on the card only *after* a successful Share, once the opportunity exists. If you also added the **AWS Partner Central Agent** card to this tab, it renders separately (a chat panel) and has no Share buttons; scroll to the **AWS Partner Central** card for the Share flow.
 
 > **If you used `scripts/create-test-deal.py` in Lab 12a**, every field below is already populated with sensible defaults. Skip straight to **13b. Click Share**. The table here is for the manual-deal path, or for participants who want to override particular values before sharing.
 
-The fields themselves live in the **About this deal** section on the **left** of the deal record. If your About-this-deal panel doesn't show all the AWS fields, edit the panel (click the pencil/edit icon at the top of the section, or **Customize the left sidebar**), search properties for `ACE` and `AWS`, and add the ones below.
+If you already surfaced the ACE/AWS fields on the **About this deal** card back in Lab 12b (Step 3), they're on the left of the record now — just fill them in there and move on.
+
+Otherwise (or to see the complete set), use the deal's **All Properties** panel: top of the record, click **Actions → View all properties**, then expand the **AWS Partner Fields** group — all the `ace_*` / `aws_*` fields are there and editable in one place. (The property group is named "AWS Partner Fields" / `aws_partner_fields`, created in Lab 11.)
+
+If you'd rather edit them inline on the **About this deal** card on the left, open that card's **Actions → Customize properties**, click the **Add properties** dropdown, search `ACE` and `AWS`, tick the ones below, and **Save**. Note this card edit is a per-user view ("Changes will only show for you"); the All Properties route above always shows the full set.
 
 **Minimum set to pass the Share validator** (the values shown are what `scripts/create-test-deal.py` populates by default — adjust as needed for your test account):
 
@@ -707,6 +763,7 @@ The fields themselves live in the **About this deal** section on the **left** of
 |---|---|---|
 | Deal stage | Appointment scheduled | Set during deal creation. |
 | Amount | 50000 | Required, must be > 0. |
+| ACE Currency Code | `USD` | ISO-4217. Required; maps to `ExpectedCustomerSpend.CurrencyCode`. Set by `create-test-deal.py --currency` (default `USD`). |
 | Close date | 3 months from today | Required, must be in the future. |
 | Description | ≥20 chars | Sent to AWS as `CustomerBusinessProblem`. |
 | ACE Customer Country Code | `US` | ISO-3166 alpha-2. |
@@ -734,7 +791,7 @@ Instead of setting the three customer-location fields directly on the deal, you 
 
 ### 13b. Click Share
 
-The card's **Share to AWS (creates and submits)** button should be enabled (green). Click it.
+Once the checklist shows **✅ Ready to share to AWS**, the button reads **Share to AWS (creates and submits)** — click it, and one click creates the opportunity *and* submits it for AWS review. (If any field is still missing, the button instead reads **Share to AWS (save as draft)** and will only create a draft — fill the remaining fields first for the full create-and-submit path.)
 
 Within 3-5 seconds the card should show:
 - A success toast.
@@ -744,6 +801,8 @@ Within 3-5 seconds the card should show:
 ### 13c. Verify the opportunity via the Partner Central CLI
 
 The Partner Central web console doesn't expose the **Sandbox catalog** — it's API-only. Use the `partnercentral-selling get-opportunity` AWS CLI command (the same call the Refresh Lambda makes under the hood).
+
+> **Prefer a UI?** AWS Samples hosts an app where you can browse your Sandbox opportunities — and even simulate approvals or create AWS-originated opportunities — without the CLI: **https://aws-samples.github.io/partner-crm-integration-samples/** (it also includes an agent chat function). To run it in your own environment, deploy from [`partner-central-api-sample-codes/opportunityManagement`](https://github.com/aws-samples/partner-crm-integration-samples/tree/main/partner-central-api-sample-codes/opportunityManagement). This is the easiest way to see your submitted opportunity and drive the approval simulation in Lab 13d.
 
 Grab the opportunity ID HubSpot wrote to `ace_opportunity_id` on the deal (visible in the **About this deal** panel; the Share success toast also includes it). Then:
 
@@ -782,26 +841,46 @@ This step exercises the **AWS → HubSpot** direction. The deployment ships with
 
 > **EventBridge is opt-in.** Many partner accounts haven't enabled the Partner Central event-notification feature yet. The CRM stack's EventBridge rule deploys regardless and stays harmlessly idle until events arrive — so use the **Refresh** button as the canonical AWS → HubSpot path for the workshop. See [`docs/architecture.md` § Request flow — CRM EventBridge auto-pull](architecture.md#request-flow--crm-eventbridge-auto-pull) for the prerequisites partners need to satisfy before Pull starts firing automatically.
 
-Update the opportunity's industry via the API:
+**First, pull the current state.** Click the card's **Refresh from AWS Partner Central** button now. It reads the live opportunity and writes `aws_review_status` (`Submitted`), `aws_stage`, and `ace_last_sync` back onto the deal — already proving the AWS → HubSpot direction from the Share you just did. (If your EventBridge rule is live, the Pull Lambda may have synced it automatically before you even click.)
 
-```bash
-aws partnercentral-selling update-opportunity \
-  --catalog Sandbox \
-  --identifier "${OPPORTUNITY_ID}" \
-  --customer "Account={Industry=Energy}" \
-  --last-modified-date "$(aws partnercentral-selling get-opportunity \
-       --catalog Sandbox --identifier ${OPPORTUNITY_ID} \
-       --profile workshop --region us-east-1 \
-       --query LastModifiedDate --output text)" \
-  --profile workshop \
-  --region us-east-1
-```
+### 13e. AWS review and approval (completing the lifecycle)
 
-> The `--last-modified-date` echo is required by ACE's optimistic- concurrency check — the value must match what `GetOpportunity` just returned, otherwise UpdateOpportunity returns `ConflictException`.
+Your Share **submitted** the opportunity, so its `ReviewStatus` is **Submitted** — in the real world it now waits on AWS review before it becomes an active co-sell:
 
-In HubSpot, click the card's **Refresh from AWS Partner Central** button. Within seconds, the deal's `ACE Industry` should flip from `Aerospace` to `Energy`.
+- **Production (`AWS` catalog):** AWS reviews and approves (or returns *Action Required* on) the referral. You wait for AWS to act; when they approve, `ReviewStatus` moves to **Approved** and the stage advances. A manual **Refresh** (or EventBridge, if enabled) brings the updated state back to HubSpot.
+- **Sandbox (testing):** simulate the AWS-side decision yourself so you don't have to wait — in the hosted app from Lab 13c (**https://aws-samples.github.io/partner-crm-integration-samples/**), open **Opportunities → [Simulate] Review by AWS** in the left menu, pick your opportunity, and approve it (you can also simulate *Action Required* or *Rejected*).
 
-If both directions worked — Share to AWS, then Refresh from AWS — the workshop is **complete**. 🎉
+Then click **Refresh from AWS Partner Central** on the deal (or let the live EventBridge Pull Lambda sync it) and watch `aws_review_status` move from `Submitted` to `Approved`. This approval sync is the real AWS → HubSpot round-trip — it mirrors the co-sell flow **create → submit → (AWS) review & approve → sync back**.
+
+### 13f. What syncs back from AWS
+
+The Refresh / Pull path exists to reflect changes **AWS** makes — not fields you edit in HubSpot. After the review in 13e, a Refresh (or the auto EventBridge Pull) brings the AWS-owned fields back onto the deal, for example:
+
+- `aws_review_status` — Submitted → In Review → Approved / Action Required / Rejected
+- `aws_stage` — the AWS-side stage as the co-sell progresses
+- the AWS opportunity owner / team and the `GetAwsOpportunitySummary` fields that only populate after submission
+- `ace_last_sync` and the sync-health flags
+
+### 13g. Partner update: push a HubSpot edit to AWS
+
+This exercises the **HubSpot → AWS update** path — the everyday partner action of keeping an opportunity current. Do this once the opportunity is **Approved** (while it's still in AWS review, partner edits may be locked).
+
+1. On the deal, set the **Next step** field (HubSpot's standard `hs_next_step` property) to something like `Schedule technical validation call with AWS SA`. You can edit it from the **About this deal** card or **Actions → View all properties**.
+2. The AWS Partner Central card recomputes to a **Pending Sync** state and its button changes to **Push updates to AWS**. Click it.
+3. Confirm the change reached Partner Central — via the hosted sandbox UI, or the CLI:
+
+   ```bash
+   aws partnercentral-selling get-opportunity \
+     --catalog Sandbox --identifier "${OPPORTUNITY_ID}" \
+     --region us-east-1 --profile workshop \
+     --query "LifeCycle.NextSteps" --output text
+   ```
+
+   It should return your new next-step text.
+
+> **Deal Stage works too**, and additionally exercises your `STAGE_MAPPING`: change the deal's stage in HubSpot, push, and the opportunity's `LifeCycle.Stage` updates to the mapped ACE stage. Next step is simplest because it's always partner-editable regardless of review state.
+
+If all three directions worked — Share to AWS (create), the AWS approval synced back, and a partner edit pushed to AWS — the workshop is **complete**. 🎉
 
 ---
 
@@ -961,22 +1040,22 @@ Like the CRMi card in Lab 9, the Agent card creates its own HubSpot project-base
 
 #### 14e-1. Drill into the Agent app
 
-1. In the **left navigation bar**, click the **Development** icon (typically at the very bottom).
-2. Click **Projects** → **hubspot-ace-agent-card** (the project from Lab 14d).
-3. Under **Project Components**, click **AWS Partner Central Agent** (the app, not the card).
-4. The app's detail page opens with a tab strip: **Overview / Auth / Distribution / Settings**.
+1. In HubSpot, open **More → Development → Projects**.
+2. Click into the project **`hubspot-ace-agent-card`** (the one you uploaded in Lab 14d). The project Overview tab opens.
+3. Under **Project Components**, click **AWS Partner Central Agent** (the top-level app name from `app-hsmeta.json`). This opens the app's detail page, which has its own tab strip: Overview / Auth / Distribution / Settings.
 
 #### 14e-2. Install the app (Distribution tab)
 
-This step is mandatory — without it, the card won't appear in the deal-layout editor in Lab 14g.
+This step is mandatory — without it, the card won't appear in the deal-layout editor in Lab 14g. Same flow as Lab 9b for the CRMi card, just a different app.
 
-1. Click the **Distribution** tab.
+1. On the app detail page, click the **Distribution** tab.
 2. Click **Install now** (it offers to install in your current workshop account — that's correct).
 3. Review the requested scopes, click **Connect app**.
-4. **HubSpot redirects you out of the developer view** (same gotcha as Lab 9b for the CRMi card). After **Connect app**, you land on **Settings → Integrations → Connected Apps → AWS Partner Central Agent**. The credentials you need aren't on that page — navigate back yourself:
-    - Left navigation bar → **Development** icon (bottom of the rail).
-    - **Projects** → **hubspot-ace-agent-card** → **AWS Partner Central Agent**.
-5. You should now see the Distribution tab showing your account as **Installed**.
+4. **Heads-up — HubSpot redirects you out of the developer view.** After **Connect app**, you land on **Settings → Integrations → Connected Apps → AWS Partner Central Agent** (a consumer-side admin screen showing Overview / Settings / App log). Navigate back yourself:
+    - Open **More → Development → Projects**.
+    - Click **`hubspot-ace-agent-card`**.
+    - Under **Project Components**, click **AWS Partner Central Agent**.
+    - Click the **Distribution** tab. Under **Standard install**, your account is now listed with an **Access token** next to it (Show / Copy / Rotate), and the top button reads **Install on a different account** — that's how you know it's installed (there's no literal "Installed" badge).
 
 #### 14e-3. Copy the Client secret (Auth tab)
 
@@ -991,8 +1070,8 @@ When set, the token lets the agent fetch live HubSpot deal properties (name, sta
 
 Since you already have the CRM integration set up, this is less critical than in the agent-only path — but it's still recommended for the best demo experience.
 
-1. Click the **Auth** tab.
-2. Under **App credentials**, click **Show token**, then copy.
+1. On the **Distribution** tab, in the **Standard install** row for your account, click **Show** next to the **Access token**.
+2. Copy the revealed value.
 
 Save it for Lab 14f's `HUBSPOT_PRIVATE_APP_TOKEN` prompt.
 
@@ -1016,21 +1095,29 @@ The script prompts for three keys:
 
 ### 14g. Install the Agent card on the deal layout
 
-Same middle-column tab pattern as Lab 12b for the CRMi card. You can either drop the Agent card into the **existing** AWS Partner Central tab you created in Lab 12b, or give it its own tab.
+Same pattern as Lab 12b — the Agent card is another **card** you add to a middle-column tab. You can add it to the **same tab** as the CRM card (they stack), or put it on its **own tab**.
 
 **Option 1 — same tab (recommended)**
 
-1. Open your test deal (`Workshop Test Deal …` from Lab 12a).
-2. Click into the **AWS Partner Central** tab in the middle column.
-3. Top right of that tab → **Customize** → opens the layout editor.
-4. With the existing tab selected, click **Add cards** → search `AWS Partner Central Agent` → drag it into the tab below the CRMi card.
-5. **Save and exit**.
+1. Open the layout editor — from your test deal (`Workshop Smoke Test`) click **Customize** at the top of the middle column, or go via **gear icon → Settings → Data Management → Objects → Deals → Record Customization → your Default view** (same as Lab 12b).
+2. Select the **tab that already holds the AWS Partner Central (CRM) card**.
+3. In that tab's body, click **+ Add card**, then open the **Card library** tab.
+4. Set **Card type = Apps** (or search `AWS Partner Central Agent`) and select the **AWS Partner Central Agent** card.
+5. Click **Add card** on **AWS Partner Central Agent** — it stacks as another card in the same tab, below the CRM card.
+6. Click **Save and exit** (top right).
 
 Both cards now live side-by-side on every deal: the CRMi card with Share / Refresh buttons + validation, and the Agent card with the chat composer.
 
 **Option 2 — separate tab**
 
-If you'd rather keep the chat surface visually separate, repeat the Lab 12b "create a tab" flow for a new tab named **AWS Partner Central Chat** and drop only the Agent card there.
+Prefer to keep the chat on its own tab instead of sharing the CRM card's tab? Create a second middle-column tab just for it:
+
+1. Open the layout editor the same way as Option 1.
+2. Click the **+** at the right end of the tab strip (next to Activities) to create a new tab; name it **AWS Partner Central Chat**.
+3. With that new tab selected, click **+ Add card** → open the **Card library** tab → set **Card type = Apps** (or search `AWS Partner Central Agent`) → select it → click **Add card**.
+4. Click **Save and exit** (top right).
+
+Result: the CRM card stays on the **AWS Partner Central** tab, and the chat lives on its own **AWS Partner Central Chat** tab — two tabs instead of one shared tab.
 
 ### 14h. Smoke test the Agent
 
@@ -1121,7 +1208,14 @@ aws iam delete-policy --policy-arn arn:aws:iam::${ACCOUNT}:policy/PartnerCentral
 aws iam delete-user --user-name crm-connector-user
 ```
 
-For the HubSpot side: go to **Development → Projects**, delete the **hubspot-ace-card-v2** project (and **hubspot-ace-agent-card** if you also deployed the Agent card in Lab 14). To delete the test account itself: **Development → Testing → Test Accounts → Actions → Delete**.
+For the HubSpot side:
+
+- **Delete the test deal(s)** you created in Lab 12a (and any made by `create-test-deal.py`): open **Deals**, tick the deal(s), **Actions → Delete**.
+- **Delete the projects**: **More → Development → Projects** → delete **hubspot-ace-card-v2** (and **hubspot-ace-agent-card** if you deployed the Agent card in Lab 14). Deleting a project removes its app, access token, and client secret.
+- **(Optional) remove the custom properties**: **gear icon → Settings → Data Management → Properties → Deal properties → AWS Partner Fields** group → delete.
+- **(Optional) remove the cards from the layout**: Settings → Objects → Deals → Record Customization → your view → delete the AWS Partner Central / Agent cards (and any tab you added).
+
+> **Simplest clean slate:** delete the whole developer test account — **More → Development → Testing → Test Accounts → Actions → Delete**. That removes the deal, custom properties, layout, and installed apps in one step, so you can skip the individual items above.
 
 ---
 
@@ -1145,7 +1239,7 @@ A participant's progress can be inferred from the filesystem and AWS state. Use 
 |---|---|
 | `aws sts get-caller-identity` succeeds | Lab 3 |
 | `aws cloudformation describe-stacks --stack-name ace-share-refresh` succeeds *(swap for `ace-share-refresh-<suffix>` if you used `--env-suffix`)* | Lab 7 |
-| HubSpot project `hubspot-ace-card-v2` visible under Development → Projects | Lab 8 |
+| HubSpot project `hubspot-ace-card-v2` visible under More → Development → Projects | Lab 8 |
 | HubSpot client secret + access token captured | Lab 9 |
 | Secret `crm-connector/ace-share` has all 7 keys: run `aws secretsmanager get-secret-value --secret-id crm-connector/ace-share --query SecretString --output text \| python3 -m json.tool` and count keys | Lab 10 |
 | `hubspot-card/dist/` exists and `hubspot-card/src/app/app-hsmeta.json` has a non-placeholder URL | Lab 7 (deploy materialised the URL) |

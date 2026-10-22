@@ -65,11 +65,25 @@ def parse_args() -> argparse.Namespace:
         help="Deal amount (USD-equivalent). Default: 50000.",
     )
     parser.add_argument(
-        "--stage",
-        default="appointmentscheduled",
+        "--currency",
+        default="USD",
         help=(
-            "HubSpot internal stage ID. Default: appointmentscheduled. "
-            "Run `python3 -m src.main list-stages` to discover IDs."
+            "ACE expected-spend currency code (ISO-4217), written to the "
+            "ace_currency_code deal property. Required by the Share validator "
+            "(maps to ExpectedCustomerSpend.CurrencyCode). Default: USD."
+        ),
+    )
+    parser.add_argument(
+        "--stage",
+        default="",
+        help=(
+            "HubSpot internal stage ID. If omitted, the first stage of "
+            "the 'default' deal pipeline is resolved automatically — this "
+            "works on portals that use numeric stage IDs (e.g. 1575643857) "
+            "as well as ones using the legacy slugs (appointmentscheduled, "
+            "qualifiedtobuy, ...). Discover IDs with "
+            "`HUBSPOT_API_KEY=$(./scripts/get-hubspot-token.sh) python3 -m "
+            "src.main list-stages`."
         ),
     )
     parser.add_argument(
@@ -251,6 +265,46 @@ def search_deal_by_name(token: str, name: str) -> str | None:
     return results[0]["id"] if results else None
 
 
+DEFAULT_STAGE_FALLBACK = "appointmentscheduled"
+
+
+def resolve_default_stage(token: str) -> str:
+    """Return the first stage ID of the ``default`` deal pipeline.
+
+    Portals created on newer HubSpot platforms use numeric stage IDs
+    (e.g. ``1575643857``) instead of the legacy text slugs
+    (``appointmentscheduled``, ``qualifiedtobuy``, ...). Resolving the
+    stage at runtime makes this script work on both. Falls back to
+    ``appointmentscheduled`` if the pipelines API can't be read."""
+    try:
+        resp = hubspot_request(token, "GET", "/crm/v3/pipelines/deals")
+    except RuntimeError as e:
+        print(
+            f"NOTE: could not read deal pipelines ({e}); falling back to "
+            f"stage '{DEFAULT_STAGE_FALLBACK}'.",
+            file=sys.stderr,
+        )
+        return DEFAULT_STAGE_FALLBACK
+
+    pipelines = resp.get("results", [])
+    if not pipelines:
+        return DEFAULT_STAGE_FALLBACK
+
+    # Prefer the pipeline whose id is literally "default"; otherwise the
+    # first one returned.
+    pipeline = next(
+        (p for p in pipelines if p.get("id") == "default"),
+        pipelines[0],
+    )
+    stages = pipeline.get("stages", [])
+    if not stages:
+        return DEFAULT_STAGE_FALLBACK
+
+    # Lowest displayOrder is the first stage in the pipeline.
+    first = min(stages, key=lambda s: s.get("displayOrder", 0))
+    return first.get("id", DEFAULT_STAGE_FALLBACK)
+
+
 def build_properties(args: argparse.Namespace) -> dict[str, str]:
     closedate = (
         dt.date.today() + dt.timedelta(days=args.close_date_days)
@@ -302,6 +356,7 @@ def build_properties(args: argparse.Namespace) -> dict[str, str]:
         "dealname": args.name,
         "dealstage": args.stage,
         "amount": args.amount,
+        "ace_currency_code": args.currency,
         "closedate": closedate,
         "description": description,
         # Customer location (Customer.Account.Address.*)
@@ -368,6 +423,16 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+    # Resolve the deal stage dynamically when the caller didn't pin one,
+    # so the script works on portals that use numeric stage IDs as well
+    # as the legacy text slugs.
+    if not args.stage:
+        args.stage = resolve_default_stage(token)
+        print(
+            f"Using deal stage '{args.stage}' "
+            "(first stage of the default pipeline)."
+        )
 
     properties = build_properties(args)
 
