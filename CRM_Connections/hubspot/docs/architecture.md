@@ -316,7 +316,7 @@ Without `--auto-bounce` the script just updates the secret and prints how to bou
 The CRM stack maps HubSpot deal stages to AWS Partner Central stages via `STAGE_MAPPING` in Secrets Manager. The default covers HubSpot's standard 7-stage pipeline. For custom pipelines:
 
 ```bash
-HUBSPOT_API_KEY="$(./scripts/get-hubspot-token.sh)" python -m src.main list-stages
+python -m src.main list-stages   # prints HubSpot stage IDs
 ./infra/set-secrets.sh STAGE_MAPPING
 # Paste like:
 # appointmentscheduled=Qualified;qualifiedtobuy=Qualified;closedwon=Launched;closedlost=Closed Lost
@@ -397,7 +397,7 @@ aws secretsmanager delete-secret --secret-id crm-connector/ace-share --force-del
 aws secretsmanager delete-secret --secret-id crm-connector/ace-agent --force-delete-without-recovery --region us-east-1
 ```
 
-(Optional) delete the HubSpot custom properties via the Properties UI and the uploaded UI Extensions via the More → Development → Projects panel.
+(Optional) delete the HubSpot custom properties via the Properties UI and the uploaded UI Extensions via the Developer Projects panel.
 
 ---
 
@@ -444,7 +444,7 @@ Re-run `./infra/set-secrets.sh HUBSPOT_CLIENT_SECRET` (or `./agent-infra/set-sec
 
 ### `Authorization failed. Reload the HubSpot page and try again`
 
-The `HUBSPOT_CLIENT_SECRET` in Secrets Manager doesn't match the value on the HubSpot Private App's Auth tab. Copy from HubSpot More → Development → Legacy Apps → your app → Auth → Client Secret, then update Secrets Manager and bounce the lambdas. (Note: HubSpot renamed "Private Apps" to "Legacy apps" in 2026; functionality is unchanged.)
+The `HUBSPOT_CLIENT_SECRET` in Secrets Manager doesn't match the value on the HubSpot Private App's Auth tab. Copy from HubSpot Settings, Integrations, Legacy apps, your app, Auth, Client Secret, then update Secrets Manager and bounce the lambdas. (Note: HubSpot renamed "Private Apps" to "Legacy apps" in 2026; functionality is unchanged.)
 
 ### `Unexpected response from backend (status 403)`
 
