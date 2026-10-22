@@ -76,8 +76,9 @@ def print_response(response):
         print(text)
         print(f"{'─' * WIDTH}")
     elif not response or not response.get("content"):
-        # Empty response after approval — this is normal (success, no message)
-        print(f"\n  ✓ Action completed.")
+        # No content came back. This is NOT evidence the write succeeded — a
+        # rejected call looks identical. Verify with get-opportunity if it matters.
+        print(f"\n  (No response content — verify the outcome before assuming success.)")
     else:
         print(f"\n  (No text content)\n  Raw: {json.dumps(response, indent=2, default=str)[:500]}\n")
     if isinstance(extra, list) and extra:
@@ -108,23 +109,22 @@ def handle_approval(client, approvals):
             choice = "n"
         if choice in ("y", "yes"):
             result = client.approve_action(tool_use_id)
-            print_response(result.get("result", {}))
-            return
         elif choice in ("n", "no"):
             reason = input("  Reason (optional): ").strip()
             result = client.reject_action(tool_use_id, reason)
-            print_response(result.get("result", {}))
-            return
         elif choice in ("o", "override"):
             instructions = input("  Instructions: ").strip()
             if not instructions:
                 print("  Override requires instructions.")
                 continue
             result = client.override_action(tool_use_id, instructions)
-            print_response(result.get("result", {}))
-            return
         else:
             print("  Invalid — enter y, n, or o.")
+            continue
+        follow_up = print_response(result)
+        if follow_up and isinstance(follow_up, list):
+            handle_approval(client, follow_up)
+        return
 
 
 # ─── Commands ────────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ Commands:
 Example questions:
   List all of my active opportunities
   Give me a summary of opportunity O1234567890
-  Update opportunity O1234567890: set expected revenue to $300,000
+  Update opportunity O1234567890: set expected customer spend to $300,000 per month
 """
 
 
@@ -163,12 +163,12 @@ def handle_command(client, user_input):
         return True
     if cmd.startswith("approve "):
         result = client.approve_action(user_input.split(maxsplit=1)[1])
-        print_response(result.get("result", {}))
+        handle_approval(client, print_response(result))
         return True
     if cmd.startswith("reject "):
         parts = user_input.split(maxsplit=2)
         result = client.reject_action(parts[1], parts[2] if len(parts) > 2 else "")
-        print_response(result.get("result", {}))
+        handle_approval(client, print_response(result))
         return True
     if cmd.startswith("override "):
         parts = user_input.split(maxsplit=2)
@@ -176,7 +176,8 @@ def handle_command(client, user_input):
             print("Usage: override <tool_use_id> <instructions>")
             return True
         result = client.override_action(parts[1], parts[2])
-        print_response(result.get("result", {}))
+        # An override returns a NEW approval request carrying the revised payload.
+        handle_approval(client, print_response(result))
         return True
     # Streaming mode (opt-in for read queries)
     if cmd.startswith("stream "):
