@@ -3,11 +3,30 @@
 Agent-to-Agent API Server
 
 Exposes the orchestrator agent as a REST API.
+
+SECURITY / DEMO SCOPE
+---------------------
+This is a sample intended for local demos. It has no authentication on any
+route. Before porting any of this into a production workload, harden at least:
+  * Authentication / authorization on every endpoint (there is none today).
+  * Network exposure: binds to 127.0.0.1 by default (see __main__). Do not
+    expose on 0.0.0.0 without authentication in front of it.
+  * CORS: restricted to local origins by default (see ALLOWED_ORIGINS below).
+  * Uploaded filenames: sanitized to a basename to prevent path traversal
+    (see _store_upload). Prefer a server-generated name in production.
+  * Write defaults: update_opportunity and auto_approve both default to False,
+    so out of the box the API generates next steps but does NOT write to
+    Partner Central. A caller must opt in with update_opportunity=true to
+    write, plus auto_approve=true to apply the write without an interactive
+    approval (the REST API has no terminal to prompt at). See the README
+    "Security and hardening" section for the recommended human-in-the-loop
+    approach.
 """
 
 import os
 import re
 import json
+import shutil
 import logging
 import tempfile
 from typing import List, Optional
@@ -31,15 +50,59 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# CORS: default to the local demo origins only. A wildcard ("*") combined with
+# an unauthenticated API lets any website drive these endpoints from a visitor's
+# browser. Override with ALLOWED_ORIGINS (comma-separated) if you front this with
+# a known origin, and add authentication before any non-local use.
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:8001,http://127.0.0.1:8001,"
+        "http://localhost:8002,http://127.0.0.1:8002",
+    ).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Initialize agent
 agent = OrchestratorAgent()
+
+
+def _store_upload(temp_root: Path, filename: str, content: bytes) -> Path:
+    """
+    Persist an uploaded file inside temp_root, defusing path traversal.
+
+    The client-supplied multipart filename is reduced to its basename so that
+    absolute paths and '../' segments cannot escape temp_root (CWE-22). The
+    resolved destination is then re-checked to stay within temp_root as defense
+    in depth. Invalid names (empty, '.', '..') are rejected with HTTP 400.
+
+    DEMO NOTE: this keeps the caller's sanitized filename for readability. For a
+    production workload, prefer a name the server generates so the stored path
+    never depends on client input at all, e.g.:
+
+        import uuid
+        allowed = {".txt", ".md", ".pdf", ".json", ".csv"}
+        suffix = Path(filename).suffix.lower()
+        if suffix not in allowed:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        safe_name = f"{uuid.uuid4().hex}{suffix}"
+    """
+    safe_name = Path(filename).name  # strip any directory components
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    dest = (temp_root / safe_name).resolve()
+    if temp_root not in dest.parents:  # must remain inside temp_root
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    dest.write_bytes(content)
+    return dest
 
 
 class GenerateRequest(BaseModel):
@@ -49,11 +112,14 @@ class GenerateRequest(BaseModel):
     notes: Optional[str] = None  # Paste meeting notes directly here
     slack_channels: Optional[List[str]] = None
     local_folders: Optional[List[str]] = None
-    update_opportunity: bool = True
-    # The REST API has no terminal to type 'y' at, so default to True.
-    # Callers can set this to False if they want a different approval flow
-    # (e.g., write the proposed change to a queue for a human to review).
-    auto_approve: bool = True
+    update_opportunity: bool = False
+    # Both default to False so the demo never writes to Partner Central unless
+    # the caller explicitly opts in. The REST API has no terminal to type 'y'
+    # at, so when update_opportunity=true the write only applies if
+    # auto_approve=true as well; with auto_approve=false the MCP approval is
+    # auto-rejected and NextSteps is left unchanged. For a real human-in-the-
+    # loop step, use the deferred-approval flow (see README).
+    auto_approve: bool = False
 
     @field_validator('opportunity_id')
     @classmethod
@@ -102,6 +168,10 @@ async def generate_next_steps(request: GenerateRequest):
     - **slack_channels**: List of Slack channels to read
     - **local_folders**: List of local folders to scan
     - **update_opportunity**: Whether to update the opportunity via MCP
+        (default False; set true to opt in to the write)
+    - **auto_approve**: Apply the write without an interactive approval
+        (default False; requires update_opportunity=true). With auto_approve
+        false a requested write is auto-rejected, leaving NextSteps unchanged.
     """
     try:
         # If notes are provided inline, write them to a temp file so the
@@ -151,8 +221,8 @@ async def generate_with_files(
     opportunity_id: str = Form(...),
     prompt: str = Form("Generate next steps based on the provided context"),
     slack_channels: Optional[str] = Form(None),
-    update_opportunity: bool = Form(True),
-    auto_approve: bool = Form(True),
+    update_opportunity: bool = Form(False),
+    auto_approve: bool = Form(False),
     files: List[UploadFile] = File(default=[])
 ):
     """
@@ -161,31 +231,36 @@ async def generate_with_files(
     - **opportunity_id**: Partner Central opportunity ID
     - **prompt**: Custom prompt for AI generation
     - **slack_channels**: Comma-separated list of Slack channels
-    - **update_opportunity**: Whether to update the opportunity via MCP
-    - **auto_approve**: Auto-approve the MCP write so no terminal prompt
-        is needed. Defaults to True for the REST endpoint since callers
-        are typically scripts/services. Set to False if you want the
-        endpoint to no-op the write step.
+    - **update_opportunity**: Whether to update the opportunity via MCP.
+        Defaults to False, so the endpoint generates next steps without
+        writing. Set to true to opt in to the write.
+    - **auto_approve**: Apply the MCP write without an interactive approval.
+        Defaults to False. The REST API has no terminal to prompt at, so with
+        auto_approve=false a requested write is auto-rejected and NextSteps is
+        left unchanged; set auto_approve=true (with update_opportunity=true) to
+        have the demo write automatically.
     - **files**: Files to upload as context
+
+    Uploaded filenames are sanitized (see _store_upload) so a client cannot
+    use path traversal to write outside the per-request temp directory.
     """
+    temp_dir = tempfile.mkdtemp()
+    temp_root = Path(temp_dir).resolve()
     try:
-        # Save uploaded files to temp directory
+        # Save uploaded files under sanitized names inside temp_root.
         uploaded_paths = []
-        temp_dir = tempfile.mkdtemp()
-        
         for file in files:
-            if file.filename:
-                file_path = Path(temp_dir) / file.filename
-                content = await file.read()
-                file_path.write_bytes(content)
-                uploaded_paths.append(str(file_path))
-                logger.info(f"Saved uploaded file: {file_path}")
-        
+            if not file.filename:
+                continue
+            dest = _store_upload(temp_root, file.filename, await file.read())
+            uploaded_paths.append(str(dest))
+            logger.info(f"Saved uploaded file: {dest}")
+
         # Parse slack channels
         channels = None
         if slack_channels:
             channels = [c.strip() for c in slack_channels.split(',')]
-        
+
         # Run agent
         result = agent.run(
             opportunity_id=opportunity_id,
@@ -195,14 +270,7 @@ async def generate_with_files(
             update_opportunity=update_opportunity,
             auto_approve=auto_approve,
         )
-        
-        # Cleanup temp files
-        for path in uploaded_paths:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-        
+
         return GenerateResponse(
             success=result.success,
             next_steps=result.next_steps,
@@ -210,10 +278,15 @@ async def generate_with_files(
             mcp_response=result.mcp_response,
             error=result.error
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in generate-with-files endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Remove the whole temp directory, never caller-derived paths.
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class AskRequest(BaseModel):
@@ -304,4 +377,8 @@ async def get_opportunity(opportunity_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Bind to loopback by default to match the README (http://localhost:8001)
+    # and keep this unauthenticated demo off the network. Override with
+    # HOST=0.0.0.0 only behind authentication or on an isolated network.
+    host = os.getenv("HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=8001)
