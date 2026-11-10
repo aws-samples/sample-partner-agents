@@ -385,9 +385,16 @@ curl -X POST http://localhost:8001/api/generate \
     "opportunity_id": "O15081741",
     "prompt": "Generate next steps",
     "notes": "Met with customer today. They want to migrate to AWS by Q3.",
-    "update_opportunity": true
+    "update_opportunity": true,
+    "auto_approve": true
   }'
 ```
+
+> Writes are opt-in. `update_opportunity` and `auto_approve` both default to
+> False, so omit them to generate next steps without touching Partner Central.
+> Send both as `true` (as above) to have the demo write NextSteps automatically.
+> See [Security and hardening](#security-and-hardening) for the recommended
+> human-in-the-loop alternative to `auto_approve`.
 
 #### POST /api/generate-with-files
 Generate with file uploads.
@@ -397,7 +404,8 @@ curl -X POST http://localhost:8001/api/generate-with-files \
   -F "opportunity_id=O15081741" \
   -F "prompt=Generate next steps from meeting notes" \
   -F "files=@sample_meeting_notes/demo_meeting_notes.txt" \
-  -F "update_opportunity=true"
+  -F "update_opportunity=true" \
+  -F "auto_approve=true"
 ```
 
 #### GET /api/opportunity/{id}
@@ -406,6 +414,54 @@ Fetch opportunity data.
 ```bash
 curl http://localhost:8001/api/opportunity/O15081741
 ```
+
+## Security and hardening
+
+This directory is a local demo. A few choices keep it simple, and you should
+change them before running it anywhere other than your own machine:
+
+- **No authentication.** No route requires a login. Keep the server bound to
+  `127.0.0.1` (the default) and do not expose it on `0.0.0.0` without putting
+  authentication in front of it. CORS defaults to local origins only; note that
+  CORS is a browser control, not a substitute for authentication.
+- **Uploaded filenames are sanitized.** Each upload is reduced to its basename
+  and the resolved path is re-checked to stay inside the per-request temp
+  directory, so a client cannot use `../` or an absolute path to write
+  elsewhere. For production, prefer a server-generated name (for example
+  `uuid4().hex` plus a validated extension).
+- **No writes by default.** `update_opportunity` and `auto_approve` both default
+  to False, so out of the box the API generates next steps but does not write to
+  Partner Central. This lets you run and test against the Sandbox without
+  changing any real opportunity.
+- **Opting in to writes.** To have the demo write NextSteps automatically, send
+  both `update_opportunity=true` and `auto_approve=true`. With
+  `update_opportunity=true` but `auto_approve=false`, the write is requested and
+  then auto-rejected (the REST API has no terminal to approve at), so NextSteps
+  is left unchanged.
+
+### Recommended: human-in-the-loop approval
+
+`auto_approve=true` applies the write with no human checkpoint, which is fine
+for a scripted demo but not what you want in a real workflow. The Partner
+Central MCP already supports a human-in-the-loop step, and the Web UI
+(`demo_ui.py`) uses it: instead of deciding for the caller, the client asks the
+MCP to defer the decision, shows the proposed NextSteps to a person, and only
+then sends approve or reject.
+
+To build the same flow on top of the REST server:
+
+1. Call `update_next_steps(..., interactive=False, defer_approval=True)` on the
+   Partner Central client. It returns a `requires_approval` response carrying a
+   `sessionId` and a `tool_use_id` instead of writing.
+2. Present the generated NextSteps to a human for review.
+3. Send the decision back to the MCP with the same `sessionId` and
+   `tool_use_id` (approve or reject) to complete or cancel the write.
+4. Verify the write landed. A rejected approval still returns status
+   `complete`, so confirm the field actually changed rather than trusting the
+   status alone.
+
+See `demo_ui.py` (`/api/submit-next-steps` and `/api/send-approval`) for a
+working reference implementation.
 
 ## Python API
 
